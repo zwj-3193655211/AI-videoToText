@@ -71,31 +71,36 @@ def _batch_sentences(sentences: List[str], max_chars: int = 15000, max_count: in
 # ====== 翻译 / 总结 ======
 
 def _do_translate(backend: LLMBackend, text: str, to_lang: str) -> Optional[str]:
-    """调用 backend 翻译一段"""
+    """调用 backend 翻译一段；输出经清洗，无效返回 None（上层重试）"""
     prompt = (
-        f"请保持原文的格式和段落结构。\n"
-        f"只返回翻译结果，不要添加任何额外的说明或标记，"
-        f"如果原文已是目标语言就不要翻译，确保语言自然流畅，\n"
-        f"输出的文本除了特定名称或名词外，只含有目标语言，\n"
-        f"请保持原文的段落和换行格式，每个段落之间用空行分隔，\n"
-        f"请将以下文本翻译成{to_lang}：\n"
-        f"{text}\n"
+        f"你是一个专业的翻译引擎。请将以下文本翻译成{to_lang}。\n"
+        f"严格遵守以下要求：\n"
+        f"1. 只输出翻译结果本身，禁止输出任何解释、说明、提示或元信息；\n"
+        f"2. 禁止使用 Markdown 标记（如 **、*、#、反引号）；\n"
+        f"3. 禁止询问上下文或提示无法翻译，即使内容不完整也直接翻译已知部分；\n"
+        f"4. 保持原文的段落和换行结构，每个段落之间用空行分隔；\n"
+        f"5. 如果原文已是目标语言，直接原样输出。\n\n"
+        f"待翻译文本：\n{text}\n"
         f"/no_think"
     )
-    return backend.chat(prompt)
+    raw = backend.chat(prompt)
+    from llm_backend import clean_llm_output
+    return clean_llm_output(raw)
 
 
 def _do_summarize(backend: LLMBackend, text: str, target_lang: str) -> Optional[str]:
-    """调用 backend 生成摘要"""
+    """调用 backend 生成摘要；输出经清洗"""
     prompt = (
         f"你是一个专业的文本总结助手。请仔细分析以下文本，"
         f"思考其核心内容和关键信息，然后生成一个全面而准确的总结。"
         f"请用{target_lang}总结以下文本的主要内容，使用简洁的语言，"
         f"分行列出要点或概述内容大意。只返回总结结果，不要包含原文，"
-        f"不要添加任何额外的说明或标记。\n\n"
+        f"不要添加任何额外的说明或标记，不要使用 Markdown 格式。\n\n"
         f"{text}"
     )
-    return backend.chat(prompt)
+    raw = backend.chat(prompt)
+    from llm_backend import clean_llm_output
+    return clean_llm_output(raw)
 
 
 def translate_and_summarize(
@@ -104,6 +109,7 @@ def translate_and_summarize(
     backend: Optional[LLMBackend] = None,
     progress_callback: Optional[Callable[[str], None]] = None,
     log_callback: Optional[Callable[[str, str], None]] = None,
+    with_summary: bool = True,
 ) -> Tuple[Optional[str], Optional[str]]:
     """
     翻译文本并生成摘要
@@ -112,6 +118,7 @@ def translate_and_summarize(
     :param backend: LLM backend，不传则按 config 默认
     :param progress_callback: 进度文本回调（单参数 msg）
     :param log_callback: 日志回调（两参数 msg, level）
+    :param with_summary: 是否同时生成摘要（False 时只翻译）
     :return: (翻译后文本, 摘要) 失败对应项为 None
     """
     def log(msg, level="info"):
@@ -193,17 +200,18 @@ def translate_and_summarize(
         log("所有批次翻译均失败", "error")
         return None, None
 
-    # 生成摘要
-    log("正在生成摘要...", "info")
-    try:
-        summary = _do_summarize(backend, translated_text, to_lang)
-    except Exception as e:
-        log(f"生成摘要出错: {e}", "error")
+    # 生成摘要（可选）
+    if with_summary:
+        log("正在生成摘要...", "info")
+        try:
+            summary = _do_summarize(backend, translated_text, to_lang)
+        except Exception as e:
+            log(f"生成摘要出错: {e}", "error")
+            summary = None
+        if not summary:
+            log("生成摘要失败", "error")
+    else:
         summary = None
-
-    if not summary:
-        log("生成摘要失败", "error")
-        return translated_text, None
 
     return translated_text, summary
 

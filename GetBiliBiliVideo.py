@@ -133,11 +133,12 @@ def getvideo(url, output_dir, log_callback=None):
         
         # 尝试获取页面内容（先使用cookie，失败则不使用cookie重试）
         for attempt in range(2):
-            use_cookie = (attempt == 0)
+            # 每次尝试都带 Cookie（第二次自动重新获取新的 Cookie）
+            use_cookie = True
             headers = get_headers(use_cookie)
             
-            if not use_cookie:
-                log("尝试不使用Cookie获取视频信息", "info")
+            if attempt == 1:
+                log("已重新获取Cookie，重试请求视频信息", "info")
             
             max_retries = 3
             retry_count = 0
@@ -171,7 +172,7 @@ def getvideo(url, output_dir, log_callback=None):
                         log("JSON解析失败，尝试其他方式", "warning")
             
             if attempt == 0 and not json_data:
-                log("使用Cookie未能获取视频信息，尝试不使用Cookie", "info")
+                log("请求视频信息失败，正在重新获取Cookie后重试", "info")
         
         if not json_data:
             log("未找到视频信息", "error")
@@ -291,11 +292,12 @@ def get_video_audio(url, output_dir, fetch_type="both", log_callback=None):
         
         # 获取视频页面和基础信息（先使用cookie，失败则不使用cookie重试）
         for attempt in range(2):
-            use_cookie = (attempt == 0)
+            # 每次尝试都带 Cookie（第二次自动重新获取新的 Cookie）
+            use_cookie = True
             headers = get_headers(use_cookie)
             
-            if not use_cookie:
-                log("尝试不使用Cookie获取视频信息", "info")
+            if attempt == 1:
+                log("已重新获取Cookie，重试请求视频信息", "info")
             
             retry_count = 0
             while retry_count < max_retries:
@@ -328,7 +330,7 @@ def get_video_audio(url, output_dir, fetch_type="both", log_callback=None):
                         log("JSON解析失败，尝试其他方式", "warning")
             
             if attempt == 0 and not json_data:
-                log("使用Cookie未能获取视频信息，尝试不使用Cookie", "info")
+                log("请求视频信息失败，正在重新获取Cookie后重试", "info")
         
         if not json_data:
             log("未找到视频信息", "error")

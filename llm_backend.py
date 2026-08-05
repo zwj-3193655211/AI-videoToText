@@ -21,6 +21,63 @@ from typing import Iterator, Optional, Tuple
 import requests
 
 
+# ===== LLM 输出清洗（翻译/总结等生成结果的后处理） =====
+
+# 模型"卡壳"话术：命中即视为无效输出（应触发重试）
+_FALLBACK_PATTERNS = [
+    r"需要更多的?上下文",
+    r"请提供[^。\n]{0,20}(更多|完整|具体|原文|信息)",
+    r"无法(翻译|完成|提供|确认|判断)",
+    r"作为(一个|名)?(AI|人工智能|语言模型|助手|大模型)",
+    r"(不确定|不清楚|无法确认|不太确定)",
+    r"请(发送|输入|粘贴|提供)[^。\n]{0,15}(原文|内容|文本|资料)",
+    r"翻译(失败|出错|不了|错误)",
+    r"没有(提供|收到|看到)[^。\n]{0,15}(文本|内容|原文)",
+    r"^(抱歉|对不起|不好意思|很遗憾)",
+]
+
+# markdown 行首标记（标题/引用/列表）
+_MD_LINE_PREFIX = re.compile(r"^\s*(#{1,6}|>|[-*+])\s*", re.MULTILINE)
+
+# 预编译卡壳话术（非捕获组包裹，避免 pattern 内 | 干扰整体匹配）
+_FALLBACK_RE = re.compile("(?:" + "|".join(_FALLBACK_PATTERNS) + ")")
+
+
+# 加粗标记：**内容** → 内容（跨行也匹配）
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
+# 独立的斜体标记：*内容*（前后不是星号，避免和加粗重叠）
+_ITALIC_RE = re.compile(r"(?<!\*)\*([^*\n]+?)\*(?!\*)")
+
+
+def clean_llm_output(text: Optional[str]) -> Optional[str]:
+    """
+    清洗 LLM 生成结果（翻译/总结），返回清洗后的纯文本；无效则返回 None。
+
+    处理：
+    1. 去除 <think> 与 HTML 标签
+    2. 去除 markdown 加粗/斜体标记（**内容** → 内容）与反引号
+    3. 去除行首 markdown 标记（#、>、列表符号）
+    4. 检测模型"卡壳"话术（如：**需要更多上下文**、请提供原文…），
+       命中即视为该次输出无效（返回 None，由上层触发重试）
+    """
+    if not text:
+        return None
+    # 1. 去 think / HTML 标签
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    text = re.sub(r"<[^>]+>", "", text)
+    # 2. 检测卡壳话术（在去 markdown 前，** 包裹的关键词也在命中范围）
+    if _FALLBACK_RE.search(text):
+        return None
+    # 3. 去 markdown 强调标记（**粗** 与 *斜* → 保留内容去星号）
+    text = _BOLD_RE.sub(r"\1", text)
+    text = _ITALIC_RE.sub(r"\1", text)
+    text = re.sub(r"`", "", text)
+    # 4. 去行首 markdown 标记
+    text = _MD_LINE_PREFIX.sub("", text)
+    text = text.strip()
+    return text or None
+
+
 @dataclass
 class LLMConfig:
     """LLM 配置"""

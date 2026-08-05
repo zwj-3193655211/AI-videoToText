@@ -1,9 +1,9 @@
 {
-    "buffer_duration": 2.0,
-    "display_mode": "translation",
+    "buffer_duration": 10.0,
+    "display_mode": "original",
     "subtitle": {
-        "opacity": 0.5,
-        "font_size": 24
+        "opacity": 0.64,
+        "font_size": 33
     },
     "translate": {
         "opacity": 0.5,

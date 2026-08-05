@@ -1,6 +1,19 @@
-numpy>=1.21.0
-torch>=2.0.0
-soundcard>=0.4.2
-PySide6>=6.4.0
-funasr>=0.8.0
-requests>=2.28.0 
+# 实时识别子项目依赖
+#
+# 与项目根目录共用同一个 Python 环境：
+#   请先安装根目录的 requirements.txt：
+#     pip install -r ../requirements.txt
+#
+# 本目录额外需要的依赖已包含在根目录清单中：
+#   - soundcard : 系统音频捕获（实时识别核心）
+#   - PySide6   : GUI
+#   - funasr / torch : 语音识别（复用根目录 asr_backend.py）
+#   - requests / python-dotenv : LLM 翻译后端（复用根目录 llm_backend.py）
+#
+# 单独安装本目录依赖（不推荐，会缺失根目录公共模块依赖）：
+#   numpy>=1.24.0
+#   torch>=2.0.0
+#   soundcard>=0.4.2
+#   PySide6>=6.4.0
+#   funasr>=1.2.6
+#   requests>=2.28.0

@@ -135,9 +135,19 @@
            </widget>
           </item>
           <item>
-           <widget class="QCheckBox" name="checkBox_2">
+           <widget class="QCheckBox" name="checkBox_translate">
             <property name="text">
-             <string>生成翻译和总结</string>
+             <string>生成翻译</string>
+            </property>
+            <property name="checked">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QCheckBox" name="checkBox_summary">
+            <property name="text">
+             <string>生成总结</string>
             </property>
             <property name="checked">
              <bool>true</bool>
@@ -274,9 +284,19 @@
            </widget>
           </item>
           <item>
-           <widget class="QCheckBox" name="checkBox">
+           <widget class="QCheckBox" name="checkBox_translate_2">
             <property name="text">
-             <string>生成翻译和总结</string>
+             <string>生成翻译</string>
+            </property>
+            <property name="checked">
+             <bool>true</bool>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QCheckBox" name="checkBox_summary_2">
+            <property name="text">
+             <string>生成总结</string>
             </property>
             <property name="checked">
              <bool>true</bool>

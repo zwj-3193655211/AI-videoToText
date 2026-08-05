@@ -6,13 +6,14 @@ import logging
 from datetime import datetime
 import torch
 # 复用项目根目录的统一 ASR 后端（路径/GPU/VAD/标点全部由 asr_backend 管理）
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
-# 本目录优先，避免与根目录同名模块（translator.py）歧义
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-if _THIS_DIR not in sys.path:
-    sys.path.insert(0, _THIS_DIR)
+_PROJECT_ROOT = os.path.dirname(_THIS_DIR)
+# 实时识别目录无条件置顶：确保 import translator/subtitle/settings_manager 取本目录模块
+# （脚本目录可能已在 sys.path 末尾，if not in 判断会跳过，必须直接 insert(0)）
+sys.path.insert(0, _THIS_DIR)
+# 项目根目录放后面：asr_backend / llm_backend / config 等公共模块
+if _PROJECT_ROOT not in sys.path:
+    sys.path.append(_PROJECT_ROOT)
 from asr_backend import FunASRBackend
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QPushButton, QTextEdit, QLabel,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PySide6.QtCore import Qt, Signal, QThread, QTimer
 import subtitle as _subtitle_mod
 SubtitleWindow = _subtitle_mod.SubtitleWindow
+SubtitleSettingsDialog = _subtitle_mod.SettingsDialog
 import threading
 from PySide6.QtGui import QIcon
 from translator import TranslationWorker, TranslationManager
@@ -461,8 +463,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("实时字幕生成器")
         self.setMinimumSize(300, 150)  # 减小窗口大小
 
-        # 设置窗口图标
-        window_icon = QIcon("AI视频转文字.ico")
+        # 设置窗口图标（图标在项目根目录，用绝对路径避免 cwd 依赖）
+        window_icon = QIcon(os.path.join(_PROJECT_ROOT, "AI视频转文字.ico"))
         self.setWindowIcon(window_icon)
 
         # 创建中心部件
@@ -504,6 +506,14 @@ class MainWindow(QMainWindow):
         self.mode_combo.setFixedWidth(110)
         self.mode_combo.currentIndexChanged.connect(self.on_display_mode_changed)
 
+        # 字幕控制：显示/隐藏 + 设置（字幕窗口本身已无按钮）
+        self.subtitle_visible_check = QCheckBox("显示字幕")
+        self.subtitle_visible_check.setChecked(True)
+        self.subtitle_visible_check.stateChanged.connect(self.on_subtitle_visible_changed)
+        self.subtitle_settings_btn = QPushButton("字幕设置")
+        self.subtitle_settings_btn.setFixedWidth(80)
+        self.subtitle_settings_btn.clicked.connect(self.open_subtitle_settings)
+
         # 开始/停止按钮
         self.start_button = QPushButton("开始")
         self.start_button.setFixedWidth(80)  # 固定宽度
@@ -526,6 +536,8 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(self.language_combo)
         control_layout.addWidget(self.mode_label)
         control_layout.addWidget(self.mode_combo)
+        control_layout.addWidget(self.subtitle_visible_check)
+        control_layout.addWidget(self.subtitle_settings_btn)
         control_layout.addStretch()  # 添加弹性空间
         control_layout.addWidget(self.start_button)
         control_layout.addWidget(self.stop_button)
@@ -581,8 +593,9 @@ class MainWindow(QMainWindow):
         if self.subtitle_window:
             self.subtitle_window.close()
 
-        # 创建新的字幕窗口（模式从下拉同步）
+        # 创建新的字幕窗口（模式从下拉同步；注入音频线程回调以便实时应用缓冲区设置）
         self.subtitle_window = SubtitleWindow()
+        self.subtitle_window.set_audio_thread_getter(lambda: self.audio_thread)
         self.subtitle_window.set_mode(["original", "translation", "both"][self.mode_combo.currentIndex()])
         self.subtitle_window.show()
 
@@ -601,6 +614,19 @@ class MainWindow(QMainWindow):
         if self.transcription_thread:
             self.transcription_thread.set_enable_translation(need_translation)
 
+    def on_subtitle_visible_changed(self, state):
+        """显示/隐藏字幕窗口（state: 0=未勾选, 2=勾选；PySide6 枚举与 int 不相等，直接用 truthy 判断）"""
+        if self.subtitle_window:
+            if state:
+                self.subtitle_window.show()
+            else:
+                self.subtitle_window.hide()
+
+    def open_subtitle_settings(self):
+        """打开字幕设置对话框（透明度/字体/缓冲大小）"""
+        if self.subtitle_window:
+            self.subtitle_window.show_settings()
+
     def start_capture(self):
         """开始捕获音频"""
         try:
@@ -609,9 +635,13 @@ class MainWindow(QMainWindow):
             self.has_available_content = False  # 重置内容状态
             self.summary_button.setEnabled(False)  # 初始禁用总结按钮
 
-            # 确保字幕窗口存在
-            if not self.subtitle_window or not self.subtitle_window.isVisible():
+            # 确保字幕窗口存在（尊重“显示字幕”勾选：用户隐藏后点开始不强制显示）
+            if not self.subtitle_window:
                 self._create_subtitle_windows()
+            if self.subtitle_visible_check.isChecked():
+                self.subtitle_window.show()
+            else:
+                self.subtitle_window.hide()
 
             # 创建并启动音频捕获线程
             self.audio_thread = AudioCaptureThread(
@@ -779,8 +809,8 @@ def main():
     # 创建 QApplication 实例
     app = QApplication(sys.argv)
 
-    # 设置应用程序图标
-    app_icon = QIcon("AI视频转文字.ico")
+    # 设置应用程序图标（绝对路径 + 真 ICO，确保任务栏显示）
+    app_icon = QIcon(os.path.join(_PROJECT_ROOT, "AI视频转文字.ico"))
     app.setWindowIcon(app_icon)
 
     # 设置应用属性以优化兼容性

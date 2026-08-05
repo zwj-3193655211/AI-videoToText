@@ -47,6 +47,31 @@ class ModelLoaderThread(QThread):
             self.error.emit(str(e))
 
 
+class ModelDownloadThread(QThread):
+    """模型自动下载线程（复用 download.py 的下载逻辑）"""
+    progress = Signal(str, str)  # msg, level
+    finished_all = Signal(bool)  # 是否全部下载成功
+
+    def run(self):
+        try:
+            # 延迟导入：modelscope import 较慢，避免拖慢应用启动
+            import download
+            from pathlib import Path
+            ok = True
+            for name, model_id, model_dir in download.MODELS:
+                self.progress.emit(f"⏳ 正在下载 {name} ...", "info")
+                try:
+                    success = download.download_model(name, model_id, Path(model_dir))
+                    ok = ok and success
+                except Exception as e:
+                    self.progress.emit(f"❌ {name} 下载失败：{e}", "error")
+                    ok = False
+            self.finished_all.emit(ok)
+        except Exception as e:
+            self.progress.emit(f"❌ 模型下载异常：{e}", "error")
+            self.finished_all.emit(False)
+
+
 class LLMBackendInitThread(QThread):
     """LLM backend 初始化线程（避免 Ollama 启动阻塞 UI）"""
     finished = Signal(object)  # backend 实例
@@ -87,14 +112,26 @@ class AudioProcessThread(QThread):
     error = Signal(str)     # 发送错误信息
     progress = Signal(str, str)  # 发送进度信息 (消息, 级别)
 
-    def __init__(self, asr, audio_path, title, target_lang, need_summary, llm_backend=None):
+    def __init__(self, asr, audio_path, title, target_lang, need_translation, need_summary, llm_backend=None):
         super().__init__()
         self.asr = asr
         self.audio_path = audio_path
         self.title = title
         self.target_lang = target_lang
+        self.need_translation = need_translation
         self.need_summary = need_summary
         self.llm_backend = llm_backend  # 可选；不传则 translator 内部默认
+
+    def _next_output_file(self, output_dir, title, suffix):
+        """生成不重名的输出文件路径"""
+        os.makedirs(output_dir, exist_ok=True)
+        output_file = os.path.join(output_dir, f"{title}_{suffix}.txt")
+        counter = 1
+        base_name = output_file
+        while os.path.exists(output_file):
+            output_file = f"{os.path.splitext(base_name)[0]}_{counter}.txt"
+            counter += 1
+        return output_file
 
     def run(self):
         try:
@@ -108,10 +145,13 @@ class AudioProcessThread(QThread):
             self.progress.emit("音频转录完成！", "success")
             self.progress.emit(f"转录文件已保存至：{transcript_path}", "info")
 
-            # 只有在需要时才进行翻译和总结
-            if self.need_summary:
-                self.progress.emit("正在翻译和总结...", "info")
+            output_dir = os.path.join(os.getcwd(), "output")
 
+            # ===== 翻译（可选）=====
+            translated_text = None
+            summary = None
+            if self.need_translation:
+                self.progress.emit("正在翻译...", "info")
                 # 把 llm_backend 显式传给 translator（避免每次重新 get_backend 触发 Ollama 自动启动检查）
                 translated_text, summary = translator.translate_and_summarize(
                     transcript_path,
@@ -119,41 +159,54 @@ class AudioProcessThread(QThread):
                     backend=self.llm_backend,
                     progress_callback=lambda msg: self.progress.emit(msg, "info"),
                     log_callback=lambda msg, level: self.progress.emit(msg, level),
+                    with_summary=self.need_summary,
                 )
-                
+
                 if translated_text:
-                    # 保存翻译结果
-                    output_dir = os.path.join(os.getcwd(), "output")
-                    os.makedirs(output_dir, exist_ok=True)
-                    
-                    # 使用标题作为文件名
-                    output_file = os.path.join(output_dir, f"{self.title}_translation.txt")
-                    
-                    # 检查文件是否已存在，如果存在则添加序号
-                    counter = 1
-                    base_name = output_file
-                    while os.path.exists(output_file):
-                        output_file = f"{os.path.splitext(base_name)[0]}_{counter}.txt"
-                        counter += 1
-                    
-                    # 写入翻译结果，添加适当的换行
+                    # 保存翻译结果（勾选总结时，总结段一并写入翻译文件）
+                    output_file = self._next_output_file(output_dir, self.title, "translation")
                     with open(output_file, "w", encoding="utf-8") as f:
                         f.write("=== 翻译结果 ===\n\n")
-                        # 按段落分割并添加换行
                         paragraphs = translated_text.split('\n\n')
                         for para in paragraphs:
                             if para.strip():
                                 f.write(para.strip() + "\n\n")
-                        
                         if summary:
                             f.write("\n=== 总结 ===\n\n")
-                            # 直接写入总结内容，不进行额外的分割处理
                             f.write(summary.strip() + "\n")
-                    
-                    self.progress.emit("翻译和总结完成！", "success")
+                    if summary:
+                        self.progress.emit("翻译和总结完成！", "success")
+                    else:
+                        self.progress.emit("翻译完成！", "success")
                     self.progress.emit(f"结果已保存至：{output_file}", "info")
                 else:
                     self.progress.emit("翻译失败", "error")
+
+            # ===== 总结（可选，且未勾选翻译时基于原文）=====
+            if self.need_summary and not translated_text:
+                self.progress.emit("正在生成总结...", "info")
+                try:
+                    with open(transcript_path, "r", encoding="utf-8") as f:
+                        raw_text = f.read()
+                    summary = translator.generate_summary(
+                        raw_text,
+                        self.target_lang,
+                        backend=self.llm_backend,
+                        log_callback=lambda msg, level: self.progress.emit(msg, level),
+                    )
+                except Exception as e:
+                    self.progress.emit(f"读取转录内容失败：{e}", "error")
+                    summary = None
+
+                if summary:
+                    output_file = self._next_output_file(output_dir, self.title, "summary")
+                    with open(output_file, "w", encoding="utf-8") as f:
+                        f.write("=== 总结 ===\n\n")
+                        f.write(summary.strip() + "\n")
+                    self.progress.emit("总结完成！", "success")
+                    self.progress.emit(f"总结已保存至：{output_file}", "info")
+                else:
+                    self.progress.emit("生成总结失败", "error")
 
             self.finished.emit(transcript_path)
 
@@ -172,8 +225,11 @@ class MainWindow(QMainWindow):
             if not os.path.isfile(ui_file):
                 raise FileNotFoundError(f"UI文件不存在：{ui_file}")
             loader = QUiLoader()
-            self.ui = loader.load(ui_file, self)
+            # 不带 parent 加载：self.ui 必须是独立顶层窗口，否则作为 owned window 不显示在任务栏
+            self.ui = loader.load(ui_file)
             self.ui.setWindowTitle("AI音视频转文本处理工具")
+            # 给实际显示的窗口设置图标（任务栏图标取自顶层窗口，而非 app）
+            self.ui.setWindowIcon(QIcon(_app_icon_path()))
             
             # 设置窗口最小尺寸
             self.ui.setMinimumSize(400, 400)
@@ -313,23 +369,25 @@ class MainWindow(QMainWindow):
 
     def _init_tab1_controls(self):
         """初始化Tab1控件"""
-        self.url_input = self.findChild(QLineEdit, "lineEdit_url")
-        self.submit_button1 = self.findChild(QPushButton, "pushButton_submit")
-        self.log_text_edit1 = self.findChild(QTextEdit, "textEdit_log")
+        self.url_input = self.ui.findChild(QLineEdit, "lineEdit_url")
+        self.submit_button1 = self.ui.findChild(QPushButton, "pushButton_submit")
+        self.log_text_edit1 = self.ui.findChild(QTextEdit, "textEdit_log")
         if self.log_text_edit1 is not None:
             self.log_text_edit1.setReadOnly(True)
-        self.lang_combo1 = self.findChild(QComboBox, "comboBox_target_language")
-        self.checkBox_summary = self.findChild(QCheckBox, "checkBox_2")
+        self.lang_combo1 = self.ui.findChild(QComboBox, "comboBox_target_language")
+        self.checkBox_translate = self.ui.findChild(QCheckBox, "checkBox_translate")
+        self.checkBox_summary = self.ui.findChild(QCheckBox, "checkBox_summary")
 
     def _init_tab2_controls(self):
         """初始化Tab2控件"""
-        self.select_btn = self.findChild(QPushButton, "select")
-        self.submit_button2 = self.findChild(QPushButton, "submit2")
-        self.log_text_edit2 = self.findChild(QTextEdit, "textEdit_log_2")
+        self.select_btn = self.ui.findChild(QPushButton, "select")
+        self.submit_button2 = self.ui.findChild(QPushButton, "submit2")
+        self.log_text_edit2 = self.ui.findChild(QTextEdit, "textEdit_log_2")
         if self.log_text_edit2 is not None:
             self.log_text_edit2.setReadOnly(True)
-        self.lang_combo2 = self.findChild(QComboBox, "comboBox_target_language_2")
-        self.checkBox_summary2 = self.findChild(QCheckBox, "checkBox")
+        self.lang_combo2 = self.ui.findChild(QComboBox, "comboBox_target_language_2")
+        self.checkBox_translate2 = self.ui.findChild(QCheckBox, "checkBox_translate_2")
+        self.checkBox_summary2 = self.ui.findChild(QCheckBox, "checkBox_summary_2")
 
     def init_language_combo(self, combo_box, tab=1):
         """初始化语言选择下拉框"""
@@ -456,6 +514,7 @@ class MainWindow(QMainWindow):
                 os.path.join(self.output_dirs['audio'], mp3_filename),
                 title,
                 self.get_lang_code(1),
+                self.checkBox_translate.isChecked(),
                 self.checkBox_summary.isChecked(),
                 tab=1
             )
@@ -495,6 +554,7 @@ class MainWindow(QMainWindow):
                 mp3_path,
                 file_name,
                 self.get_lang_code(2),
+                self.checkBox_translate2.isChecked(),
                 self.checkBox_summary2.isChecked(),
                 tab=2
             )
@@ -538,8 +598,8 @@ class MainWindow(QMainWindow):
             self.log(f"视频转音频失败：{str(e)}", "error")
             return None
 
-    def _process_audio_file(self, audio_path, title, target_lang, need_summary, tab):
-        """处理音频文件：转录、翻译和总结"""
+    def _process_audio_file(self, audio_path, title, target_lang, need_translation, need_summary, tab):
+        """处理音频文件：转录 + 可选翻译 / 可选总结"""
         try:
             if not hasattr(self, 'asr'):
                 self.log("语音识别模型尚未加载完成，请稍候...", "error", tab)
@@ -551,6 +611,7 @@ class MainWindow(QMainWindow):
                 audio_path,
                 title,
                 target_lang,
+                need_translation,
                 need_summary,
                 llm_backend=self.llm_backend,
             )
@@ -579,12 +640,69 @@ class MainWindow(QMainWindow):
         self.status_model.setStyleSheet("color: #16a34a; padding: 0 6px;")
 
     def _on_model_error(self, error_msg):
-        """模型加载错误的回调"""
+        """模型加载错误的回调；模型缺失时询问是否自动下载"""
         self.log(f"模型加载失败：{error_msg}", "error", 1)
         self.log(f"模型加载失败：{error_msg}", "error", 2)
         self.status_model.setText("🔴 ASR 加载失败")
         self.status_model.setStyleSheet("color: #dc2626; padding: 0 6px;")
+
+        # 模型缺失类错误 → 询问自动下载（约 1.5GB，需联网）
+        if "缺失" in str(error_msg) or "请运行 python download.py" in str(error_msg):
+            box = QMessageBox(self)
+            box.setWindowTitle("语音识别模型缺失")
+            box.setText("检测到语音识别模型未安装，是否立即自动下载？")
+            box.setInformativeText(
+                "将下载 3 个基石模型（Paraformer + VAD + 标点，约 1.5GB）\n"
+                "下载完成后自动加载，无需手动操作。"
+            )
+            yes_btn = box.addButton("立即下载", QMessageBox.ButtonRole.AcceptRole)
+            no_btn = box.addButton("暂不下载", QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(yes_btn)
+            box.exec()
+            if box.clickedButton() is yes_btn:
+                self._start_model_download()
+                return
+            QMessageBox.warning(
+                self, "提示",
+                "模型未下载，语音识别功能不可用。\n"
+                "后续可运行 python download.py 手动下载。"
+            )
+            return
+
         QMessageBox.critical(self, "错误", f"模型加载失败：{error_msg}")
+
+    def _start_model_download(self):
+        """启动后台模型下载线程"""
+        self.log("开始自动下载语音识别模型（约 1.5GB），请稍候...", "info", 1)
+        self.status_model.setText("⏳ 正在下载模型…")
+        self.status_model.setStyleSheet("color: #d97706; padding: 0 6px;")
+        self.download_thread = ModelDownloadThread()
+        self.download_thread.progress.connect(
+            lambda msg, level: self.log(msg, level, 1))
+        self.download_thread.progress.connect(
+            lambda msg, level: self.log(msg, level, 2))
+        self.download_thread.finished_all.connect(self._on_download_finished)
+        self.download_thread.start()
+
+    def _on_download_finished(self, ok):
+        """模型下载完成后的回调：成功则自动重新加载"""
+        if ok:
+            self.log("模型下载完成，正在自动加载...", "success", 1)
+            self.log("模型下载完成，正在自动加载...", "success", 2)
+            self.status_model.setText("⏳ 模型加载中…")
+            self.status_model.setStyleSheet("color: #d97706; padding: 0 6px;")
+            self.model_loader = ModelLoaderThread()
+            self.model_loader.finished.connect(self._on_model_loaded)
+            self.model_loader.error.connect(self._on_model_error)
+            self.model_loader.start()
+        else:
+            self.status_model.setText("🔴 模型下载失败")
+            self.status_model.setStyleSheet("color: #dc2626; padding: 0 6px;")
+            QMessageBox.critical(
+                self, "错误",
+                "模型下载失败，请检查网络后重试。\n"
+                "或运行 python download.py 手动下载。"
+            )
 
     # ====== LLM backend + 设置 ======
 
@@ -675,12 +793,18 @@ class MainWindow(QMainWindow):
         self._position_floating_buttons()
 
 
+def _app_icon_path() -> str:
+    """返回应用图标绝对路径（不依赖当前工作目录）"""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "AI视频转文字.ico")
+
+
 def main():
     app = QApplication(sys.argv)
     # 应用统一主题（Fusion + 浅色 palette + QSS）
     ui_theme.apply_theme(app)
-    # 设置应用程序图标
-    app_icon = QIcon("AI视频转文字.ico")
+    # 设置应用程序图标（绝对路径 + 真 ICO 格式，确保任务栏显示）
+    icon_path = _app_icon_path()
+    app_icon = QIcon(icon_path)
     app.setWindowIcon(app_icon)
     window = MainWindow()
     sys.exit(app.exec())

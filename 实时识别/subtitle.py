@@ -81,12 +81,9 @@ class SettingsDialog(QDialog):
         self.setLayout(layout)
     
     def on_buffer_changed(self, value):
-        """缓冲区大小改变时的处理"""
-        # 获取主窗口实例
-        main_window = self.parent().parent()
-        if main_window and hasattr(main_window, 'audio_thread') and main_window.audio_thread and main_window.audio_thread.isRunning():
-            main_window.audio_thread.set_buffer_duration(value)
-            main_window.update_status(f"缓冲区大小已调整为 {value} 秒")
+        """缓冲区大小改变时的处理：通过 SubtitleWindow 转发到运行中的音频线程"""
+        if self.parent():
+            self.parent().apply_buffer_duration(value)
     
     def accept(self):
         """确定按钮点击事件"""
@@ -110,7 +107,7 @@ class SettingsDialog(QDialog):
             font.setPointSize(font_size)
             self.parent().subtitle_text.setFont(font)
             
-            # 更新缓冲区大小
+            # 更新缓冲区大小（运行中则实时生效）
             self.on_buffer_changed(buffer_duration)
             
         super().accept()
@@ -167,36 +164,26 @@ class SubtitleWindow(QWidget):
         # 设置默认鼠标样式
         self.setCursor(Qt.ArrowCursor)
         
-        # 初始化标题栏显示控制
-        self._title_bar_visible = True
-        self._title_bar_timer = QTimer(self)
-        self._title_bar_timer.setSingleShot(True)
-        self._title_bar_timer.timeout.connect(self._hide_title_bar)
-        
-        # 默认隐藏标题栏
-        self._hide_title_bar()
         # 初始按模式渲染
         self._render()
     
     def _init_ui(self):
-        """初始化UI"""
+        """初始化UI（字幕窗口仅保留字幕内容，标题栏/按钮已移至主控制窗口）"""
         # 加载UI文件
         ui_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "subtitle.ui")
         loader = QUiLoader()
         self.ui = loader.load(ui_file)
         
-        # 获取控件引用
-        self.title_bar = self.ui.findChild(QWidget, "titleBar")
-        self.title_label = self.ui.findChild(QLabel, "titleLabel")
-        self.settings_button = self.ui.findChild(QPushButton, "settingsButton")
-        self.close_button = self.ui.findChild(QPushButton, "closeButton")
-        self.subtitle_text = self.ui.findChild(QTextEdit,"subtitle")
+        # 获取控件引用（只有字幕文本区）
+        self.subtitle_text = self.ui.findChild(QTextEdit, "subtitle")
 
         # 设置QTextEdit
         self.subtitle_text.setReadOnly(True)  # 设置为只读
         self.subtitle_text.setFrameStyle(QTextEdit.NoFrame)  # 移除边框
         self.subtitle_text.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # 隐藏垂直滚动条
         self.subtitle_text.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # 隐藏水平滚动条
+        # 鼠标事件穿透到窗口本身：只读字幕无需选择文本，保证按住文字也能拖动窗口
+        self.subtitle_text.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.subtitle_text.setText("字幕将在这里显示")
         # 设置默认字体
         font = QFont()
@@ -234,29 +221,14 @@ class SubtitleWindow(QWidget):
             QWidget {
                 background-color: transparent;
             }
-            QLabel {
-                color: white;
-            }
-            QPushButton {
-                color: white;
-                border: none;
-                padding: 5px;
-            }
-            QPushButton:hover {
-                background-color: rgba(255, 255, 255, 0.1);
-            }
-            #titleBar {
-                background-color: rgba(0, 0, 0, 0.5);
-            }
         """)
     
     def _connect_signals(self):
-        """连接信号"""
-        self.settings_button.clicked.connect(self._show_settings)
-        self.close_button.clicked.connect(self.hide)  # 改为隐藏而不是关闭
+        """连接信号（字幕窗口无按钮；设置/隐藏由主控制窗口负责）"""
+        pass
     
-    def _show_settings(self):
-        """显示设置对话框"""
+    def show_settings(self):
+        """打开字幕设置对话框（由主控制窗口调用）"""
         dialog = SettingsDialog(self)
         if dialog.exec() == QDialog.Rejected:
             # 如果用户取消，恢复原始透明度
@@ -286,40 +258,26 @@ class SubtitleWindow(QWidget):
             return 'bottom'
         return None
     
+    def _edge_cursor(self, edge):
+        """按调整方向返回对应光标：左右/上下/对角箭头"""
+        if edge in ('left', 'right'):
+            return Qt.SizeHorCursor      # 左右箭头
+        if edge in ('top', 'bottom'):
+            return Qt.SizeVerCursor      # 上下箭头
+        if edge in ('topleft', 'bottomright'):
+            return Qt.SizeFDiagCursor    # 对角箭头
+        if edge in ('topright', 'bottomleft'):
+            return Qt.SizeBDiagCursor    # 反对角箭头
+        return Qt.SizeAllCursor
+
     def _update_cursor(self, edge):
-        """更新鼠标指针样式"""
+        """更新鼠标指针样式：拖动=四向箭头，调整大小=按边缘方向箭头"""
         if self._is_dragging:
-            self.setCursor(Qt.CrossCursor)
+            self.setCursor(Qt.SizeAllCursor)          # 拖动：四向箭头（可移动）
         elif edge:
-            self.setCursor(Qt.SizeAllCursor)
+            self.setCursor(self._edge_cursor(edge))   # 调整大小：按方向箭头
         else:
             self.setCursor(Qt.ArrowCursor)
-    
-    def _show_title_bar(self):
-        """显示标题栏"""
-        if not self._title_bar_visible:
-            self._title_bar_visible = True
-            self.title_bar.show()
-      
-    
-    def _hide_title_bar(self):
-        """隐藏标题栏"""
-        if self._title_bar_visible:
-            self._title_bar_visible = False
-            self.title_bar.hide()
-
-    
-    def enterEvent(self, event):
-        """鼠标进入窗口事件"""
-        self._show_title_bar()
-        super().enterEvent(event)
-    
-    def leaveEvent(self, event):
-        """鼠标离开窗口事件"""
-        # 检查鼠标是否真的离开了整个窗口
-        if not self.rect().contains(self.mapFromGlobal(QCursor.pos())):
-            self._hide_title_bar()
-        super().leaveEvent(event)
     
     def mousePressEvent(self, event: QMouseEvent):
         """鼠标按下事件"""
@@ -330,12 +288,13 @@ class SubtitleWindow(QWidget):
                 self._resize_edge = edge
                 self._resize_start_pos = event.globalPosition().toPoint()
                 self._resize_start_geometry = self.geometry()
+                self.setCursor(self._edge_cursor(edge))  # 立即显示方向箭头
             else:
                 # 如果不在边缘，则进行窗口拖动
                 self._drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
                 self._is_dragging = True
-                # 拖动时显示十字架
-                self.setCursor(Qt.CrossCursor)
+                # 拖动时显示四向箭头
+                self.setCursor(Qt.SizeAllCursor)
             event.accept()
     
     def mouseMoveEvent(self, event: QMouseEvent):
@@ -386,6 +345,22 @@ class SubtitleWindow(QWidget):
         
         self.setGeometry(new_geometry)
     
+    def set_audio_thread_getter(self, getter):
+        """注入获取音频线程的回调（由主窗口提供，用于实时应用缓冲区设置）"""
+        self._audio_thread_getter = getter
+
+    def apply_buffer_duration(self, duration):
+        """应用缓冲区时长：音频线程运行中则实时生效，否则仅保存待下次启动"""
+        try:
+            getter = getattr(self, '_audio_thread_getter', None)
+            thread = getter() if getter else None
+            if thread is not None and thread.isRunning():
+                thread.set_buffer_duration(duration)
+                return True
+        except Exception:
+            pass
+        return False
+
     def set_mode(self, mode: str):
         """设置显示模式：original(仅原文) / translation(仅翻译) / both(原文+翻译)"""
         if mode not in ("original", "translation", "both"):

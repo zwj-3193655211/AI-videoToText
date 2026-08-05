@@ -127,10 +127,11 @@ class TranslationEngine:
             raise Exception(f"调用模型出错: {str(e)}")
         if not result or not result.strip():
             raise Exception("模型未返回结果（请检查 API Key / 模型配置，可到主程序 ⚙ 设置里配置）")
-        # 移除 <think> 标签及其内容
-        text = re.sub(r'<think>.*?</think>', '', result, flags=re.DOTALL)
-        # 移除其他 <> 包围的标签
-        text = re.sub(r'<[^>]+>', '', text).strip()
+        # 统一清洗：去 think/HTML/markdown 标记，并检测模型卡壳话术（如 **需要更多上下文**）
+        from llm_backend import clean_llm_output
+        text = clean_llm_output(result)
+        if not text:
+            raise Exception("模型返回了无效内容（如要求更多上下文），已过滤")
         return text
 
     def translate(self, text, target_lang):
