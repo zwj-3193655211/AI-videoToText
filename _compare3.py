@@ -51,20 +51,37 @@ def run_sensevoice(audio_path: Path) -> dict:
     import torch
 
     model_dir = ROOT / "model" / "sensevoice" / "iic" / "SenseVoiceSmall"
-    vad_dir = ROOT / "model" / "vad" / "iic" / "speech_fsmn_vad_zh-cn-16k-common-pytorch"
+    # VAD 之前在 model/vad/，已被删除；用 funasr_cache 里的备用路径
+    vad_dir = Path(r"D:\tools\Anaconda3\envs\avtt\DOWNLOADS\funasr_cache\iic\speech_fsmn_vad_zh-cn-16k-common-pytorch")
 
     print(f"\n[1/3] SenseVoice (老 + VAD) ...")
     print(f"  model: {model_dir}")
     print(f"  vad:   {vad_dir}")
-    print(f"  device: CPU (PyTorch 2.5.1 + RTX 5060 sm_120 不兼容)")
 
     t0 = time.time()
-    model = AutoModel(
-        model=str(model_dir),
-        vad_model=str(vad_dir),
-        vad_kwargs={"max_single_segment_time": 30000},
-        device="cpu",  # sm_120 兼容性问题，强制 CPU
-    )
+    # 优先用 GPU（PyTorch 2.9.1+cu128 已支持 sm_120），失败自动降级 CPU
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    used_device = device
+    print(f"  device: {used_device}  (PyTorch 2.9.1+cu128 已支持 sm_120)")
+    try:
+        model = AutoModel(
+            model=str(model_dir),
+            vad_model=str(vad_dir),
+            vad_kwargs={"max_single_segment_time": 30000},
+            device=device,
+        )
+    except Exception as e:
+        if device != "cpu":
+            print(f"  GPU 失败 ({e})，降级到 CPU")
+            model = AutoModel(
+                model=str(model_dir),
+                vad_model=str(vad_dir),
+                vad_kwargs={"max_single_segment_time": 30000},
+                device="cpu",
+            )
+            used_device = "cpu"
+        else:
+            raise
     result = model.generate(
         input=str(audio_path),
         cache={},
@@ -87,13 +104,13 @@ def run_sensevoice(audio_path: Path) -> dict:
     out.write_text(
         f"# 模型: SenseVoiceSmall (老 + FSMN-VAD)\n"
         f"# 耗时: {elapsed:.1f}s\n"
-        f"# 设备: CPU\n"
+        f"# 设备: {used_device}\n"
         f"# 原始输出 (带 SenseVoice 标签):\n{text}\n\n"
         f"# 清洗后 (去除 <|lang|><|emo|><|event|> 等标签):\n{text_clean}\n",
         encoding="utf-8"
     )
     print(f"  [OK] {elapsed:.1f}s, {len(text_clean)} 字 -> {out.name}")
-    return {"model": "SenseVoiceSmall (老)", "elapsed": elapsed, "chars": len(text_clean), "text": text_clean, "device": "CPU"}
+    return {"model": "SenseVoiceSmall (老)", "elapsed": elapsed, "chars": len(text_clean), "text": text_clean, "device": used_device}
 
 
 def run_faster_whisper(audio_path: Path, model_name: str, label: str) -> dict:
