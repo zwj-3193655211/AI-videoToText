@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+.installed.cfg
+*.egg
+
+# 虚拟环境
+venv/
+env/
+.venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# 项目：模型目录（900MB+，不入库）
+model/
+model/**/*
+
+# 项目：运行时输出（音频/转录/翻译结果）
+output/
+原文/
+音频/
+实时识别/原文/
+实时识别/音频/
+
+# 用户配置（包含可能的 API key，敏感）
+*.log
+logs/
+*.tmp
+.cache/
+
+# 模型下载临时文件
+*.tar.gz
+*.zip
+*.bin
+*.onnx
+
+# 浏览器自动化
+chromedriver.exe
+chromedriver
+LICENSE.chromedriver
+
+# 实时识别的运行结果
+实时识别/总结/
+实时识别/翻译/
+实时识别/原文/
+实时识别/音频/
+
+# 临时
+nul
+.tmp/

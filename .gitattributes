@@ -1,0 +1,14 @@
+# Ensure consistent line endings across platforms
+* text=auto eol=lf
+
+# Python files
+*.py text eol=lf
+
+# Windows shell scripts
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# UI files
+*.ui text eol=lf
+*.qss text eol=lf
