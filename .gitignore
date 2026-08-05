@@ -39,6 +39,9 @@ output/
 logs/
 *.tmp
 .cache/
+.env
+.env.local
+.env.*.local
 
 # 模型下载临时文件
 *.tar.gz

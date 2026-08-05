@@ -9,4 +9,6 @@ peft>=0.4.0
 diffusers>=0.19.0
 requests>=2.28.0
 ffmpeg-python>=0.2.0
-soundcard>=0.4.2 
+soundcard>=0.4.2
+faster-whisper>=1.0.0
+python-dotenv>=1.0.0
