@@ -72,16 +72,23 @@ OLLAMA_AUTO_START = get("OLLAMA_AUTO_START", "true", bool)
 # DeepSeek
 DEEPSEEK_API_KEY = get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-DEEPSEEK_MODEL = get("DEEPSEEK_MODEL", "deepseek-chat")
+DEEPSEEK_MODEL = get("DEEPSEEK_MODEL", "deepseek-v4-flash")
 
 # LLM 行为
 LLM_TEMPERATURE = get("LLM_TEMPERATURE", "0.3", float)
 LLM_CONCURRENCY = get("LLM_CONCURRENCY", "2", int)
 
 # ASR
-ASR_MODEL = get("ASR_MODEL", "Systran/faster-whisper-medium")
+# 后端：funasr（基石，默认）/ faster-whisper（可选，需自行下载模型）
+ASR_BACKEND = get("ASR_BACKEND", "funasr")
+# 模型：offline（默认，Paraformer+VAD+标点）/ streaming（流式，预留实时识别）
+ASR_MODEL = get("ASR_MODEL", "offline")
+# 模型根目录（download.py 下载到的位置，默认项目根 ./model）
 ASR_MODEL_DIR = get("ASR_MODEL_DIR", "") or None
 ASR_DEVICE = get("ASR_DEVICE", "auto")  # auto / cuda / cpu
+# 是否启用 CT-PUNC 标点模型（仅 offline 生效）
+ASR_USE_PUNC = get("ASR_USE_PUNC", "true", bool)
+# faster-whisper 计算精度（仅该后端使用）
 ASR_COMPUTE_TYPE = get("ASR_COMPUTE_TYPE", "float16")
 
 

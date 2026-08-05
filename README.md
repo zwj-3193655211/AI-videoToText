@@ -6,9 +6,8 @@
 
 - **B站视频下载**：自动从B站视频链接提取音频，无需手动输入cookie
 - **语音识别**：支持多种语音识别模型
-  - SenseVoice模型（默认）
-  - Paraformer-large模型（高精度）
-  - Paraformer-zh模型（中文优化）
+  - Paraformer-large 离线版 + VAD + 标点（中文优化，高精度带标点）
+  - Paraformer 流式版（实时场景）
 - **批量处理**：支持批量处理音频文件
 - **实时识别**：支持实时语音识别功能
 - **文本处理**：自动分段、格式化转录结果
@@ -21,7 +20,10 @@
    ```
    pip install -r requirements.txt
    ```
-3. 确保已安装必要的模型（首次运行时会自动下载）
+3. 下载基石模型（已存在会自动跳过）：
+   ```
+   python download.py
+   ```
 
 ## 使用方法
 
@@ -70,14 +72,14 @@ python 实时识别.py
 ```
 AI-VedioToText/
 ├── GetBiliBiliVideo.py     # B站视频下载模块
-├── transcription.py        # 语音识别模块（SenseVoice模型）
+├── download.py             # 基石模型下载（已有自动跳过）
+├── transcription.py        # 语音识别模块（Paraformer）
 ├── main_window.py          # 主窗口界面
 ├── translator.py           # 翻译模块
-├── model/                  # 模型目录
-│   ├── sensevoice/         # SenseVoice模型
-│   ├── paraformer-large/   # Paraformer大模型
-│   ├── paraformer-zh/      # Paraformer中文模型
-│   └── vad/                # 语音活动检测模型
+├── model/                  # 模型目录（基石）
+│   ├── vad/                # VAD 语音活动检测
+│   ├── punc/               # CT-PUNC 标点恢复
+│   └── paraformer/         # Paraformer 离线版 / 流式版
 ├── 实时识别/                # 实时识别功能目录
 ├── 原文/                   # 识别结果保存目录
 └── 音频/                   # 音频文件保存目录

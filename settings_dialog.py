@@ -53,7 +53,7 @@ def save_env(values: Dict[str, str]) -> None:
         "OLLAMA_BASE_URL", "OLLAMA_MODEL", "OLLAMA_AUTO_START",
         "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "DEEPSEEK_MODEL",
         "LLM_TEMPERATURE", "LLM_CONCURRENCY",
-        "ASR_MODEL", "ASR_MODEL_DIR", "ASR_DEVICE", "ASR_COMPUTE_TYPE",
+        "ASR_BACKEND", "ASR_MODEL", "ASR_MODEL_DIR", "ASR_DEVICE", "ASR_USE_PUNC",
     ]
     for key in keys_order:
         if key in values:
@@ -166,8 +166,13 @@ class _SettingsDialogImpl:
         self.deepseek_url = qt['QLineEdit'](self._current.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"))
         self.deepseek_model = qt['QComboBox']()
         self.deepseek_model.setEditable(True)
-        self.deepseek_model.addItems(["deepseek-chat", "deepseek-reasoner"])
-        current_ds_model = self._current.get("DEEPSEEK_MODEL", "deepseek-chat")
+        # DeepSeek V4 系列（deepseek-chat / deepseek-reasoner 2026-07-24 已下线）
+        self.deepseek_model.addItems([
+            "deepseek-v4-flash",        # 284B/13B 激活，免费，主力
+            "deepseek-v4-pro",          # 1.6T/49B 激活，付费，强推理
+            "deepseek-v4-pro-max",      # 1.6T，max 推理模式，最强
+        ])
+        current_ds_model = self._current.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
         idx = self.deepseek_model.findText(current_ds_model)
         if idx >= 0:
             self.deepseek_model.setCurrentIndex(idx)
@@ -207,38 +212,36 @@ class _SettingsDialogImpl:
         # ---- ASR 标签页 ----
         asr_tab = qt['QWidget']()
         asr_layout = qt['QVBoxLayout'](asr_tab)
-        asr_group = qt['QGroupBox']("语音识别 (faster-whisper)")
+        asr_group = qt['QGroupBox']("语音识别 (FunASR Paraformer)")
         ag_layout = qt['QFormLayout'](asr_group)
+        self.asr_backend = qt['QComboBox']()
+        self.asr_backend.addItems(["funasr", "faster-whisper"])
+        self.asr_backend.setCurrentText(self._current.get("ASR_BACKEND", "funasr"))
         self.asr_model = qt['QComboBox']()
-        self.asr_model.setEditable(True)
-        self.asr_model.addItems([
-            "Systran/faster-whisper-small",
-            "Systran/faster-whisper-medium",
-            "Systran/faster-whisper-large-v3",
-        ])
-        current_asr = self._current.get("ASR_MODEL", "Systran/faster-whisper-small")
+        self.asr_model.addItems(["offline", "streaming"])
+        current_asr = self._current.get("ASR_MODEL", "offline")
         idx = self.asr_model.findText(current_asr)
         if idx >= 0:
             self.asr_model.setCurrentIndex(idx)
         else:
             self.asr_model.setCurrentText(current_asr)
+        self.asr_use_punc = qt['QCheckBox']("启用标点恢复 (CT-PUNC)")
+        self.asr_use_punc.setChecked(self._current.get("ASR_USE_PUNC", "true") not in ("false", "False", "0", ""))
         self.asr_device = qt['QComboBox']()
         self.asr_device.addItems(["auto", "cuda", "cpu"])
         self.asr_device.setCurrentText(self._current.get("ASR_DEVICE", "auto"))
-        self.asr_compute = qt['QComboBox']()
-        self.asr_compute.addItems(["float16", "int8", "float32", "bfloat16"])
-        self.asr_compute.setCurrentText(self._current.get("ASR_COMPUTE_TYPE", "float16"))
+        ag_layout.addRow("后端:", self.asr_backend)
         ag_layout.addRow("模型:", self.asr_model)
         ag_layout.addRow("设备:", self.asr_device)
-        ag_layout.addRow("精度:", self.asr_compute)
+        ag_layout.addRow("", self.asr_use_punc)
         asr_layout.addWidget(asr_group)
 
         asr_hint = qt['QLabel'](
             "提示：\n"
-            "• 模型会自动从 ModelScope 下载（无需手动）\n"
-            "• large-v3 准确度最高但 ~2.6GB；small 速度快 ~460MB\n"
-            "• distil-whisper 是英文专用，不要选\n"
-            "• CPU 模式下 float16 会自动降级为 int8"
+            "• 基石模型由 download.py 下载到 model/ 目录（已存在自动跳过）\n"
+            "• offline = Paraformer + VAD + 标点（默认，中文高精度）\n"
+            "• streaming = 流式 Paraformer（预留，供实时识别）\n"
+            "• faster-whisper 为可选后端，需自行下载模型"
         )
         asr_hint.setStyleSheet("color: gray; font-size: 11px;")
         asr_hint.setWordWrap(True)
@@ -295,9 +298,10 @@ class _SettingsDialogImpl:
             "DEEPSEEK_MODEL": self.deepseek_model.currentText().strip(),
             "LLM_TEMPERATURE": str(self.temperature.value()),
             "LLM_CONCURRENCY": str(self.concurrency.value()),
+            "ASR_BACKEND": self.asr_backend.currentText().strip(),
             "ASR_MODEL": self.asr_model.currentText().strip(),
             "ASR_DEVICE": self.asr_device.currentText().strip(),
-            "ASR_COMPUTE_TYPE": self.asr_compute.currentText().strip(),
+            "ASR_USE_PUNC": "true" if self.asr_use_punc.isChecked() else "false",
         }
 
     def _on_save(self):

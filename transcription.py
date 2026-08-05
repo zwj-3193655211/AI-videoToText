@@ -2,21 +2,28 @@
 语音识别（ASR）兼容层
 
 - 保持旧接口 LocalASR / process_audio，main_window.py 不用改
-- 底层使用 asr_backend.FasterWhisperBackend
+- 底层使用 asr_backend.get_default_backend()（基石：FunASR Paraformer）
 - 默认输出到 ./原文/{title}_transcript.txt
 """
 
 import os
-import re
 from typing import Optional
 
-import zhconv
-from asr_backend import ASRBackend, FasterWhisperBackend, ProgressCallback, TranscribeResult
+from asr_backend import (
+    ASRBackend,
+    ProgressCallback,
+    TranscribeResult,
+    get_default_backend,
+)
 
 
 def to_simplified(text: str) -> str:
-    """繁转简：Whisper 默认输出繁体，统一转简体"""
-    return zhconv.convert(text, 'zh-cn')
+    """繁转简：兜底用（Paraformer 输出简体，此函数保留供兼容）"""
+    try:
+        import zhconv
+        return zhconv.convert(text, 'zh-cn')
+    except Exception:
+        return text
 
 
 class LocalASR:
@@ -30,8 +37,8 @@ class LocalASR:
     """
 
     def __init__(self, backend: Optional[ASRBackend] = None):
-        # 默认按 config 选后端
-        self.backend = backend or FasterWhisperBackend()
+        # 默认按 config 选后端（基石：FunASR Paraformer）
+        self.backend = backend or get_default_backend()
 
     def process_audio(
         self,
@@ -94,7 +101,7 @@ class LocalASR:
 def main():
     """命令行入口"""
     print("=" * 50)
-    print("  AI 视频转文字 - 语音识别工具 (faster-whisper)")
+    print("  AI 视频转文字 - 语音识别工具 (FunASR Paraformer)")
     print("=" * 50)
 
     while True:

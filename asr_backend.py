@@ -2,7 +2,10 @@
 语音识别（ASR）后端抽象与实现
 
 - ASRBackend: 抽象基类
-- FasterWhisperBackend: faster-whisper 实现（多语种首选）
+- FunASRBackend: FunASR / Paraformer 实现（项目基石，默认后端）
+  - paraformer-offline + FSMN-VAD + CT-PUNC（离线中文 ASR，带标点）
+  - paraformer-streaming（流式，预留，供实时识别使用）
+- FasterWhisperBackend: faster-whisper 实现（可选，需自行下载 whisper 模型）
 
 设计原则：
   - 不依赖 UI，可在子线程运行
@@ -19,6 +22,7 @@ os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, List, Optional
 
 import config
@@ -69,21 +73,207 @@ class ASRBackend(ABC):
         raise NotImplementedError
 
 
+def _probe_duration(audio_path: str) -> float:
+    """用 ffprobe 探测音频时长（秒），失败返回 0"""
+    try:
+        import json
+        import subprocess
+        p = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", audio_path],
+            capture_output=True, text=True, encoding="utf-8", errors="ignore", timeout=30,
+        )
+        return float(json.loads(p.stdout)["format"]["duration"])
+    except Exception:
+        return 0.0
+
+
+class FunASRBackend(ASRBackend):
+    """
+    FunASR / Paraformer 后端（项目基石）
+
+    - offline（默认）: Paraformer-Large + FSMN-VAD + CT-PUNC
+        - 中文 ASR 高精度，输出带标点
+        - 模型位置由 config.ASR_MODEL_DIR 指定，默认 ./model
+    - streaming（预留）: Paraformer-Streaming，供实时识别使用
+
+    模型路径结构（download.py 下载的基石）:
+      model/vad/  model/punc/  model/paraformer/paraformer-offline/  model/paraformer/paraformer-streaming/
+    """
+
+    # 默认模型目录结构（相对 ASR_MODEL_DIR）
+    _MODEL_REL = {
+        "vad": Path("vad") / "speech_fsmn_vad_zh-cn-16k-common-pytorch",
+        "punc": Path("punc") / "punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
+        "offline": Path("paraformer") / "paraformer-offline" / "iic"
+                   / "speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+        "streaming": Path("paraformer") / "paraformer-streaming" / "iic"
+                     / "speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online",
+    }
+
+    def __init__(
+        self,
+        model_name: Optional[str] = None,
+        device: Optional[str] = None,
+        use_punc: Optional[bool] = None,
+        model_root: Optional[str] = None,
+        disable_update: bool = True,
+    ):
+        # 延迟导入：避免不切换后端时白白加载 funasr
+        from funasr import AutoModel
+
+        model_name = model_name or config.ASR_MODEL          # offline / streaming
+        device = device or config.ASR_DEVICE                 # auto / cuda / cpu
+        use_punc = config.ASR_USE_PUNC if use_punc is None else use_punc
+        model_root = Path(model_root or config.ASR_MODEL_DIR or "model")
+
+        if device == "auto":
+            try:
+                import torch
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+            except ImportError:
+                device = "cpu"
+
+        # 解析模型路径
+        offline_dir = model_root / self._MODEL_REL["offline"]
+        streaming_dir = model_root / self._MODEL_REL["streaming"]
+        vad_dir = model_root / self._MODEL_REL["vad"]
+        punc_dir = model_root / self._MODEL_REL["punc"]
+
+        self._device = device
+        self._model_name = model_name
+        self._use_punc = use_punc
+
+        if model_name == "streaming":
+            assert streaming_dir.exists(), f"流式模型缺失: {streaming_dir}（请运行 python download.py）"
+            print(f"[ASR] 加载 Paraformer-Streaming @ {device}")
+            self.model = AutoModel(
+                model=str(streaming_dir), device=device, disable_update=disable_update,
+            )
+            # 流式模型内部按 chunk 处理，无 VAD、无 PUNC，batch 强制 1
+            self._gen_kwargs = dict(batch_size=1, chunk_size=[0, 10, 5])
+        else:
+            # offline（默认）：VAD + 可选 PUNC
+            assert offline_dir.exists(), f"离线模型缺失: {offline_dir}（请运行 python download.py）"
+            assert (vad_dir / "model.pt").exists(), f"VAD 模型缺失: {vad_dir}（请运行 python download.py）"
+            print(f"[ASR] 加载 Paraformer-Offline + FSMN-VAD" + (" + CT-PUNC" if use_punc else "") + f" @ {device}")
+            kwargs = dict(
+                model=str(offline_dir),
+                vad_model=str(vad_dir),
+                vad_kwargs={"max_single_segment_time": 30000},
+                device=device,
+                disable_update=disable_update,
+            )
+            if use_punc:
+                assert (punc_dir / "model.pt").exists(), f"标点模型缺失: {punc_dir}（请运行 python download.py）"
+                kwargs["punc_model"] = str(punc_dir)
+            self.model = AutoModel(**kwargs)
+            self._gen_kwargs = dict(batch_size_s=60)
+
+    @property
+    def device(self) -> str:
+        return self._device
+
+    @property
+    def model_name(self) -> str:
+        return self._model_name
+
+    def transcribe(
+        self,
+        audio_path: str,
+        language: Optional[str] = None,
+        beam_size: int = 5,
+        vad_filter: bool = True,
+        progress_callback: ProgressCallback = None,
+    ) -> TranscribeResult:
+        if not os.path.exists(audio_path):
+            raise FileNotFoundError(f"音频文件不存在: {audio_path}")
+
+        duration = _probe_duration(audio_path)
+        if progress_callback:
+            progress_callback(0.0, duration, "开始识别（FunASR Paraformer）")
+
+        gen_kwargs = dict(self._gen_kwargs)
+        gen_kwargs["input"] = audio_path
+        gen_kwargs["cache"] = {}
+        # offline 带 VAD 时输出含标点；语言自动
+        if language:
+            gen_kwargs["language"] = language
+        # 字级时间戳（Paraformer LFR-6，帧索引，每帧=60ms）
+        if self._model_name != "streaming":
+            gen_kwargs["pred_timestamp"] = True
+
+        result = self.model.generate(**gen_kwargs)
+        if progress_callback:
+            progress_callback(duration, duration, "解码完成，整理结果...")
+
+        raw = ""
+        if result and isinstance(result, list):
+            raw = result[0].get("text", "")
+
+        # 去 SenseVoice 类特殊标签（Paraformer 一般没有，兜底处理）
+        full_text = re.sub(r"<\|[^|]+\|>", "", raw).strip()
+        full_text = re.sub(r"\s+", " ", full_text).strip()
+
+        # FunASR 返回字级时间戳（offline 时）：[start_ms, end_ms]，单位毫秒（实测 1ms/帧）
+        # 按标点切句，把字级时间戳聚合成句级 Segment
+        segments: List[Segment] = []
+        ts = result[0].get("timestamp") if result and isinstance(result, list) else None
+        if ts and isinstance(ts, list) and len(ts) > 1 and all(
+            isinstance(x, (list, tuple)) and len(x) == 2 for x in ts
+        ):
+            try:
+                # 按标点切句（含末尾标点）
+                sentence_parts = re.split(r"(?<=[。？！；.!?；])", full_text)
+                sentence_parts = [s for s in sentence_parts if s.strip()]
+                # 时间戳逐字对应文本；英文单词/标点会多占位置，用字符比例对齐
+                # 简单稳妥方案：按句子字数占比切分 ts 索引
+                n_chars = max(len(full_text), 1)
+                n_ts = len(ts)
+                char_cursor = 0
+                ts_cursor = 0
+                for sent in sentence_parts:
+                    n = len(sent)
+                    if n <= 0 or char_cursor >= n_chars:
+                        continue
+                    end_char = min(char_cursor + n, n_chars)
+                    # 估算该句在 ts 中的起止索引
+                    i0 = int(ts_cursor + (char_cursor / n_chars) * (n_ts - ts_cursor))
+                    i1 = int(ts_cursor + (end_char / n_chars) * (n_ts - ts_cursor))
+                    i1 = min(max(i1, i0 + 1), n_ts - 1)
+                    seg = Segment(
+                        start=float(ts[i0][0]) / 1000.0,
+                        end=float(ts[i1][1]) / 1000.0,
+                        text=sent,
+                    )
+                    segments.append(seg)
+                    char_cursor = end_char
+            except Exception:
+                segments = []
+
+        if progress_callback:
+            progress_callback(duration, duration,
+                              f"识别完成，共 {len(segments) or 1} 段，{len(full_text)} 字")
+
+        return TranscribeResult(
+            text=full_text,
+            segments=segments,
+            language="zh",
+            language_probability=1.0,
+            duration=duration,
+        )
+
+
 class FasterWhisperBackend(ASRBackend):
     """
-    faster-whisper (CTranslate2 优化版 Whisper) 后端
+    faster-whisper (CTranslate2 优化版 Whisper) 后端【可选，非默认】
 
-    优势：
-      - 速度比原版 Whisper 快 4-5 倍
-      - 内存占用低
-      - 支持 CPU/CUDA，自动调度
-      - 99 种语言
+    注意：项目基石已切换到 FunASR Paraformer，whisper 模型不再由 download.py 管理。
+    如需使用本后端，请自行下载对应模型（Systran/faster-whisper-*）到 ASR_MODEL_DIR。
 
     模型选择（按推荐度排序）：
-      - Systran/faster-distil-whisper-large-v3  (推荐, ~750MB, 速度+准确度平衡)
-      - Systran/faster-whisper-large-v3          (~1.5GB, 准确度最高)
       - Systran/faster-whisper-medium            (~1.5GB, 折中)
       - Systran/faster-whisper-small             (~460MB, 速度快)
+      - Systran/faster-whisper-large-v3          (~1.5GB, 准确度最高)
     """
 
     def __init__(
@@ -152,7 +342,6 @@ class FasterWhisperBackend(ASRBackend):
                 model_name,
                 cache_dir=cache,
             )
-            # snapshot_download 返回的是 snapshots 目录，需要取里面的 model.bin
             model_bin = os.path.join(local_dir, "model.bin")
             if os.path.exists(model_bin):
                 print(f"[ASR] 模型已就绪: {local_dir}")
@@ -226,21 +415,25 @@ class FasterWhisperBackend(ASRBackend):
 
 
 def get_default_backend() -> ASRBackend:
-    """工厂方法：按 config 选默认后端（目前只有 faster-whisper）"""
+    """工厂方法：按 config.ASR_BACKEND 选默认后端"""
+    backend_name = config.ASR_BACKEND
+    if backend_name == "funasr":
+        return FunASRBackend()
     return FasterWhisperBackend()
 
 
 if __name__ == "__main__":
     # 简单自检
     import sys
-    print("FasterWhisperBackend 配置:")
+    print("ASR 后端配置:")
+    print(f"  backend: {config.ASR_BACKEND}")
     print(f"  model: {config.ASR_MODEL}")
     print(f"  device: {config.ASR_DEVICE}")
-    print(f"  compute_type: {config.ASR_COMPUTE_TYPE}")
     if len(sys.argv) > 1:
-        backend = FasterWhisperBackend()
+        backend = get_default_backend()
         result = backend.transcribe(sys.argv[1], progress_callback=lambda c, t, m: print(f"[{c:.1f}/{t:.1f}] {m}"))
         print("\n=== 识别结果 ===")
         print(f"语言: {result.language} ({result.language_probability:.2%})")
         print(f"时长: {result.duration:.1f}s")
+        print(f"段数: {len(result.segments)}")
         print(f"文本: {result.text[:200]}{'...' if len(result.text) > 200 else ''}")

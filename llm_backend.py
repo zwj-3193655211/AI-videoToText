@@ -29,6 +29,7 @@ class LLMConfig:
     api_key: Optional[str]       # ollama 不需要
     model: str
     temperature: float = 0.3
+    max_tokens: int = 4096       # 单次最大输出 token
     timeout: int = 600           # 单次请求超时（秒）
 
 
@@ -123,6 +124,7 @@ class OllamaBackend(LLMBackend):
         prompt: str,
         system: Optional[str] = None,
         temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
     ) -> Optional[str]:
         messages = []
         if system:
@@ -139,6 +141,7 @@ class OllamaBackend(LLMBackend):
                     "stream": False,
                     "options": {
                         "temperature": temperature if temperature is not None else self.config.temperature,
+                        "num_predict": max_tokens if max_tokens is not None else self.config.max_tokens,
                     },
                 },
                 timeout=self.config.timeout,
@@ -160,6 +163,7 @@ class DeepSeekBackend(LLMBackend):
         prompt: str,
         system: Optional[str] = None,
         temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
     ) -> Optional[str]:
         if not self.config.api_key:
             return None  # 配置缺失直接返回 None，不抛错
@@ -180,6 +184,7 @@ class DeepSeekBackend(LLMBackend):
                     "model": self.config.model,
                     "messages": messages,
                     "temperature": temperature if temperature is not None else self.config.temperature,
+                    "max_tokens": max_tokens if max_tokens is not None else self.config.max_tokens,
                     "stream": False,
                 },
                 timeout=self.config.timeout,
