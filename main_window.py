@@ -9,6 +9,8 @@ import GetBiliBiliVideo
 from datetime import datetime
 import transcription
 import translator
+import llm_backend
+import settings_dialog
 import subprocess
 import uuid
 import queue
@@ -29,6 +31,19 @@ class ModelLoaderThread(QThread):
         try:
             model = transcription.LocalASR()
             self.finished.emit(model)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class LLMBackendInitThread(QThread):
+    """LLM backend 初始化线程（避免 Ollama 启动阻塞 UI）"""
+    finished = Signal(object)  # backend 实例
+    error = Signal(str)
+
+    def run(self):
+        try:
+            backend = llm_backend.get_backend()
+            self.finished.emit(backend)
         except Exception as e:
             self.error.emit(str(e))
 
@@ -60,20 +75,21 @@ class AudioProcessThread(QThread):
     error = Signal(str)     # 发送错误信息
     progress = Signal(str, str)  # 发送进度信息 (消息, 级别)
 
-    def __init__(self, asr, audio_path, title, target_lang, need_summary):
+    def __init__(self, asr, audio_path, title, target_lang, need_summary, llm_backend=None):
         super().__init__()
         self.asr = asr
         self.audio_path = audio_path
         self.title = title
         self.target_lang = target_lang
         self.need_summary = need_summary
+        self.llm_backend = llm_backend  # 可选；不传则 translator 内部默认
 
     def run(self):
         try:
             # 转录音频
             self.progress.emit("正在转录音频...", "info")
             transcript_path = self.asr.process_audio(self.audio_path, self.title)
-            
+
             if not transcript_path:
                 raise Exception("音频转录失败")
 
@@ -83,13 +99,14 @@ class AudioProcessThread(QThread):
             # 只有在需要时才进行翻译和总结
             if self.need_summary:
                 self.progress.emit("正在翻译和总结...", "info")
-                
-                # 直接调用翻译和总结函数
+
+                # 把 llm_backend 显式传给 translator（避免每次重新 get_backend 触发 Ollama 自动启动检查）
                 translated_text, summary = translator.translate_and_summarize(
                     transcript_path,
                     self.target_lang,
-                    lambda msg: self.progress.emit(msg, "info"),
-                    lambda msg, level: self.progress.emit(msg, level)
+                    backend=self.llm_backend,
+                    progress_callback=lambda msg: self.progress.emit(msg, "info"),
+                    log_callback=lambda msg, level: self.progress.emit(msg, level),
                 )
                 
                 if translated_text:
@@ -165,6 +182,24 @@ class MainWindow(QMainWindow):
             """)
             self.pin_button.clicked.connect(self.toggle_window_pin)
             self.is_pinned = False
+
+            # 创建设置按钮（左下角，与 pin 按钮对角）
+            self.settings_button = QPushButton("⚙", self.ui)
+            self.settings_button.setFixedSize(30, 30)
+            self.settings_button.setStyleSheet("""
+                QPushButton {
+                    border: none;
+                    background-color: transparent;
+                    font-size: 18px;
+                }
+                QPushButton:hover {
+                    background-color: #e0e0e0;
+                    border-radius: 15px;
+                }
+            """)
+            self.settings_button.setToolTip("设置（LLM 服务 / ASR 模型）")
+            self.settings_button.clicked.connect(self.open_settings)
+            self.llm_backend = None  # 启动后异步初始化
             
             # 创建日志队列和线程
             self.log_queue = queue.Queue()
@@ -203,6 +238,12 @@ class MainWindow(QMainWindow):
             self.model_loader.finished.connect(self._on_model_loaded)
             self.model_loader.error.connect(self._on_model_error)
             self.model_loader.start()
+
+            # 初始化 LLM backend（后台线程，避免 Ollama 启动阻塞 UI）
+            self.llm_loader = LLMBackendInitThread()
+            self.llm_loader.finished.connect(self._on_llm_loaded)
+            self.llm_loader.error.connect(self._on_llm_error)
+            self.llm_loader.start()
 
             self.log("正在加载语音识别模型，请稍候...", "info", 1)
             self.log("正在加载语音识别模型，请稍候...", "info", 2)
@@ -436,7 +477,8 @@ class MainWindow(QMainWindow):
                 audio_path,
                 title,
                 target_lang,
-                need_summary
+                need_summary,
+                llm_backend=self.llm_backend,
             )
             
             # 连接信号
@@ -467,6 +509,35 @@ class MainWindow(QMainWindow):
         self.log(f"模型加载失败：{error_msg}", "error", 2)
         QMessageBox.critical(self, "错误", f"模型加载失败：{error_msg}")
 
+    # ====== LLM backend + 设置 ======
+
+    def _on_llm_loaded(self, backend):
+        self.llm_backend = backend
+        self.log(f"LLM backend 就绪: {backend}", "info", 1)
+
+    def _on_llm_error(self, error_msg):
+        self.llm_backend = None
+        self.log(f"LLM backend 初始化失败：{error_msg}", "error", 1)
+        self.log("翻译/总结功能将不可用，修复后点击 ⚙ 重新设置", "warning", 1)
+
+    def _reload_llm_backend_async(self):
+        """设置保存后异步重建 backend"""
+        self.llm_backend = None
+        self.llm_loader = LLMBackendInitThread()
+        self.llm_loader.finished.connect(self._on_llm_loaded)
+        self.llm_loader.error.connect(self._on_llm_error)
+        self.llm_loader.start()
+
+    def open_settings(self):
+        """弹出设置对话框；保存后立即重建 LLM backend（ASR 改动需重启）"""
+        try:
+            result = settings_dialog.open_settings(self)
+            if result:  # 用户点了保存
+                self._reload_llm_backend_async()
+                self.log("设置已保存。LLM 立即生效，ASR 模型改动需重启。", "info", 1)
+        except Exception as e:
+            QMessageBox.critical(self, "打开设置失败", str(e))
+
     def closeEvent(self, event):
         """窗口关闭时的处理"""
         self.stop_realtime_transcription()
@@ -488,12 +559,19 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event):
         """处理窗口大小改变事件"""
         super().resizeEvent(event)
-        # 更新固定按钮位置
+        # 更新固定按钮位置（右下）
         if hasattr(self, 'pin_button'):
             margin = 10
             self.pin_button.move(
                 self.ui.width() - self.pin_button.width() - margin,
                 self.ui.height() - self.pin_button.height() - margin
+            )
+        # 更新设置按钮位置（左下，与 pin 按钮对角）
+        if hasattr(self, 'settings_button'):
+            margin = 10
+            self.settings_button.move(
+                margin,
+                self.ui.height() - self.settings_button.height() - margin
             )
 
 
