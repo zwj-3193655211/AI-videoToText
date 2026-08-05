@@ -1,4 +1,5 @@
 import os
+import html as _html
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, 
                              QHBoxLayout, QLabel, QPushButton, QSlider,
                              QDialog, QApplication, QTextEdit, QDoubleSpinBox)
@@ -125,7 +126,7 @@ class SettingsDialog(QDialog):
         super().reject()
 
 class SubtitleWindow(QWidget):
-    """字幕窗口"""
+    """字幕窗口（统一：仅原文 / 仅翻译 / 原文+翻译）"""
     # 定义调整大小的区域大小
     RESIZE_MARGIN = 5
     
@@ -141,6 +142,11 @@ class SubtitleWindow(QWidget):
         self._resize_edge = None
         self._resize_start_pos = None
         self._resize_start_geometry = None
+        
+        # 显示模式与最近内容（原文/翻译配对）
+        self._display_mode = SettingsManager().get_display_mode()  # original / translation / both
+        self._last_original = ""
+        self._last_translation = ""
         
         # 设置默认透明度
         self.setWindowOpacity(self.settings_manager.get_opacity('subtitle'))
@@ -169,6 +175,8 @@ class SubtitleWindow(QWidget):
         
         # 默认隐藏标题栏
         self._hide_title_bar()
+        # 初始按模式渲染
+        self._render()
     
     def _init_ui(self):
         """初始化UI"""
@@ -378,18 +386,44 @@ class SubtitleWindow(QWidget):
         
         self.setGeometry(new_geometry)
     
-    def update_subtitle(self, text: str):
-        """更新字幕内容"""
-        # 获取当前文本
-        current_text = self.subtitle_text.toPlainText()
-        # 如果当前文本不为空，添加换行
-        if current_text:
-            text = "\n" + text
-        # 追加新文本
-        self.subtitle_text.append(text)
-        # 设置文本居中对齐
+    def set_mode(self, mode: str):
+        """设置显示模式：original(仅原文) / translation(仅翻译) / both(原文+翻译)"""
+        if mode not in ("original", "translation", "both"):
+            return
+        self._display_mode = mode
+        SettingsManager().set_display_mode(mode)  # 持久化
+        # 双行模式需要更高窗口
+        self.setMinimumHeight(120 if mode == "both" else 60)
+        self._render()
+
+    def get_mode(self) -> str:
+        return self._display_mode
+
+    def update_original(self, text: str):
+        """更新原文字幕（只存最近一段，与翻译配对显示）"""
+        self._last_original = text
+        self._render()
+
+    def update_translation(self, text: str):
+        """更新翻译字幕（异步到达后刷新显示）"""
+        self._last_translation = text
+        self._render()
+
+    def _render(self):
+        """按显示模式渲染字幕（原文白色，翻译金色）"""
+        orig = _html.escape(self._last_original)
+        trans = _html.escape(self._last_translation)
+        mode = self._display_mode
+        if mode == "translation":
+            body = f'<div style="text-align:center; color:#ffd54f;">{trans}</div>'
+        elif mode == "both":
+            body = (f'<div style="text-align:center; color:#ffffff;">{orig}</div>'
+                    f'<div style="text-align:center; color:#ffd54f; margin-top:6px;">{trans}</div>')
+        else:  # original
+            body = f'<div style="text-align:center; color:#ffffff;">{orig}</div>'
+        self.subtitle_text.setHtml(body)
         self.subtitle_text.setAlignment(Qt.AlignCenter)
-        # 滚动到底部
-        self.subtitle_text.verticalScrollBar().setValue(
-            self.subtitle_text.verticalScrollBar().maximum()
-        ) 
+
+    def update_subtitle(self, text: str):
+        """兼容旧接口：更新原文字幕"""
+        self.update_original(text) 

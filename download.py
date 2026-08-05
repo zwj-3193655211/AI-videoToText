@@ -4,8 +4,7 @@
 负责下载语音识别所需的全部模型到本项目 model/ 目录下：
 1. VAD 模型        : iic/speech_fsmn_vad_zh-cn-16k-common-pytorch   （语音活动检测）
 2. PUNC 标点模型   : iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch（标点恢复）
-3. paraformer-offline : iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch（离线中文ASR）
-4. paraformer-streaming: iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online（流式中文ASR）
+3. paraformer-offline : iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch（中文ASR，唯一后端）
 
 规则：
 - 已下载（目标目录存在且含 model.pt）则跳过，不会重复下载
@@ -51,12 +50,6 @@ MODELS = [
         "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
         ROOT / "model" / "paraformer" / "paraformer-offline"
               / "iic" / "speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-    ),
-    (
-        "Paraformer 流式版",
-        "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online",
-        ROOT / "model" / "paraformer" / "paraformer-streaming"
-              / "iic" / "speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online",
     ),
 ]
 

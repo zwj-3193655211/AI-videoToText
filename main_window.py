@@ -1,9 +1,11 @@
 import sys
 import os
+import html
 from PySide6.QtWidgets import (QApplication, QMainWindow, QLineEdit, QPushButton,QWidget,
-                               QTextEdit, QMessageBox, QComboBox, QTabWidget, QFileDialog, QCheckBox, QVBoxLayout, QSizePolicy)
+                               QTextEdit, QMessageBox, QComboBox, QTabWidget, QFileDialog, QCheckBox, QVBoxLayout, QSizePolicy,
+                               QLabel)
 from PySide6.QtUiTools import QUiLoader
-from PySide6.QtCore import QTimer, Qt, Signal, QObject, QMetaObject, Slot, QThread
+from PySide6.QtCore import QTimer, Qt, Signal, QObject, QMetaObject, Slot, QThread, QEvent
 import re
 import GetBiliBiliVideo
 from datetime import datetime
@@ -11,10 +13,20 @@ import transcription
 import translator
 import llm_backend
 import settings_dialog
+import ui_theme
 import subprocess
 import uuid
 import queue
 from PySide6.QtGui import QIcon
+
+
+# 日志级别颜色映射
+LOG_COLORS = {
+    "error":   ("#dc2626", "✖"),
+    "success": ("#16a34a", "✔"),
+    "warning": ("#d97706", "⚠"),
+    "info":    ("#6b7280", ""),
+}
 
 
 class LogSignals(QObject):
@@ -166,40 +178,76 @@ class MainWindow(QMainWindow):
             # 设置窗口最小尺寸
             self.ui.setMinimumSize(400, 400)
             
-            # 创建固定窗口按钮
+            # 创建固定窗口按钮（右下角）
             self.pin_button = QPushButton("📌", self.ui)
-            self.pin_button.setFixedSize(30, 30)
+            self.pin_button.setFixedSize(32, 32)
+            self.pin_button.setCursor(Qt.PointingHandCursor)
             self.pin_button.setStyleSheet("""
                 QPushButton {
-                    border: none;
-                    background-color: transparent;
-                    font-size: 16px;
+                    border: 1px solid #d0d5dc;
+                    border-radius: 16px;
+                    background-color: #ffffff;
+                    font-size: 14px;
                 }
                 QPushButton:hover {
-                    background-color: #e0e0e0;
-                    border-radius: 15px;
+                    background-color: #eff6ff;
+                    border-color: #3b82f6;
+                }
+                QPushButton:pressed {
+                    background-color: #dbeafe;
                 }
             """)
             self.pin_button.clicked.connect(self.toggle_window_pin)
             self.is_pinned = False
 
-            # 创建设置按钮（左下角，与 pin 按钮对角）
-            self.settings_button = QPushButton("⚙", self.ui)
-            self.settings_button.setFixedSize(30, 30)
+            # 创建设置按钮（左下角，与 pin 按钮对角）——做成明显的圆角按钮，方便用户发现
+            self.settings_button = QPushButton("⚙  设置", self.ui)
+            self.settings_button.setFixedSize(72, 32)
+            self.settings_button.setCursor(Qt.PointingHandCursor)
             self.settings_button.setStyleSheet("""
                 QPushButton {
-                    border: none;
-                    background-color: transparent;
-                    font-size: 18px;
+                    border: 1px solid #d0d5dc;
+                    border-radius: 16px;
+                    background-color: #ffffff;
+                    font-size: 13px;
+                    color: #1f2329;
+                    padding: 0 10px;
                 }
                 QPushButton:hover {
-                    background-color: #e0e0e0;
-                    border-radius: 15px;
+                    background-color: #eff6ff;
+                    border-color: #3b82f6;
+                    color: #1d4ed8;
+                }
+                QPushButton:pressed {
+                    background-color: #dbeafe;
                 }
             """)
             self.settings_button.setToolTip("设置（LLM 服务 / ASR 模型）")
             self.settings_button.clicked.connect(self.open_settings)
             self.llm_backend = None  # 启动后异步初始化
+
+            # 应用全局主题（Fusion 风格 + QSS），幂等
+            app = QApplication.instance()
+            if app is not None:
+                ui_theme.apply_theme(app)
+
+            # 状态栏指示器（模型 / LLM 状态）
+            self.status_model = QLabel("⏳ 模型加载中…")
+            self.status_model.setStyleSheet("color: #d97706; padding: 0 6px;")
+            self.status_llm = QLabel("⏳ LLM 初始化中…")
+            self.status_llm.setStyleSheet("color: #d97706; padding: 0 6px;")
+            status_bar = self.ui.statusBar()
+            if status_bar is not None:
+                status_bar.addPermanentWidget(self.status_model)
+                status_bar.addPermanentWidget(self.status_llm)
+
+            # Tab2 顶部插入“已选择文件”标签
+            self.file_label = QLabel("尚未选择文件")
+            self.file_label.setProperty("role", "badge-neutral")
+            self.file_label.setMinimumHeight(30)
+            tab2_layout = self.ui.findChild(QVBoxLayout, "verticalLayout_tab2")
+            if tab2_layout is not None:
+                tab2_layout.insertWidget(0, self.file_label)
             
             # 创建日志队列和线程
             self.log_queue = queue.Queue()
@@ -249,6 +297,10 @@ class MainWindow(QMainWindow):
             self.log("正在加载语音识别模型，请稍候...", "info", 2)
 
             self.ui.show()
+            # 定位悬浮按钮（show 后布局尺寸才确定）
+            self.ui.installEventFilter(self)
+            self._position_floating_buttons()
+            QTimer.singleShot(50, self._position_floating_buttons)
         except FileNotFoundError as e:
             QMessageBox.critical(self, "错误", str(e))
             sys.exit(1)
@@ -264,6 +316,8 @@ class MainWindow(QMainWindow):
         self.url_input = self.findChild(QLineEdit, "lineEdit_url")
         self.submit_button1 = self.findChild(QPushButton, "pushButton_submit")
         self.log_text_edit1 = self.findChild(QTextEdit, "textEdit_log")
+        if self.log_text_edit1 is not None:
+            self.log_text_edit1.setReadOnly(True)
         self.lang_combo1 = self.findChild(QComboBox, "comboBox_target_language")
         self.checkBox_summary = self.findChild(QCheckBox, "checkBox_2")
 
@@ -272,6 +326,8 @@ class MainWindow(QMainWindow):
         self.select_btn = self.findChild(QPushButton, "select")
         self.submit_button2 = self.findChild(QPushButton, "submit2")
         self.log_text_edit2 = self.findChild(QTextEdit, "textEdit_log_2")
+        if self.log_text_edit2 is not None:
+            self.log_text_edit2.setReadOnly(True)
         self.lang_combo2 = self.findChild(QComboBox, "comboBox_target_language_2")
         self.checkBox_summary2 = self.findChild(QCheckBox, "checkBox")
 
@@ -300,12 +356,20 @@ class MainWindow(QMainWindow):
 
     @Slot(str, str, int)
     def _update_log(self, msg, level, tab):
-        """更新日志显示（在主线程中执行）"""
+        """更新日志显示（在主线程中执行，按级别着色）"""
         log_edit = self.log_text_edit1 if tab == 1 else self.log_text_edit2 if tab == 2  else None
         if log_edit:
             timestamp = datetime.now().strftime("%H:%M:%S")
-            prefix = f"[{level.upper()}] {timestamp}"
-            log_edit.append(f"{prefix} {msg}")
+            key = str(level).lower()
+            color, icon = LOG_COLORS.get(key, LOG_COLORS["info"])
+            safe_msg = html.escape(str(msg))
+            icon_html = f"{icon} " if icon else ""
+            tag_color = color if key != "info" else "#9ca3af"
+            log_edit.append(
+                f'<span style="color:{tag_color}; font-weight:600;">{icon_html}[{key.upper()}]</span> '
+                f'<span style="color:#9ca3af;">{timestamp}</span> '
+                f'<span style="color:#1f2329;">{safe_msg}</span>'
+            )
             # 滚动到底部
             log_edit.verticalScrollBar().setValue(log_edit.verticalScrollBar().maximum())
             # 立即更新UI
@@ -334,23 +398,33 @@ class MainWindow(QMainWindow):
                 else:
                     raise ValueError("不支持的文件格式")
 
-                self.log(f"已选择{file_type}文件: {file_name}{file_ext}", "info", tab=2)
+                self.log(f"已选择{file_type}文件: {file_name}{file_ext}", "success", tab=2)
 
                 # 保存文件路径供后续处理使用
                 self.current_file_path = file_path
+                # 顶部标签反馈
+                self.file_label.setText(f"📎 {file_name}{file_ext}")
+                self.file_label.setProperty("role", "badge-success")
+                self.file_label.setToolTip(file_path)
+                ui_theme.refresh_style(self.file_label)
 
             except Exception as e:
                 self.log(f"\n❌ 选择文件时发生错误：{str(e)}", "error", tab=2)
                 self.current_file_path = None
+                self.file_label.setText("❌ 不支持的文件格式")
+                self.file_label.setProperty("role", "badge-error")
+                ui_theme.refresh_style(self.file_label)
 
     def _set_buttons_state(self, tab, enabled=True):
-        """设置指定标签页的按钮状态"""
+        """设置指定标签页的按钮状态（禁用时同步显示“处理中”文案，给出反馈）"""
         if tab == 1:
             self.submit_button1.setEnabled(enabled)
+            self.submit_button1.setText("提交" if enabled else "⏳ 处理中…")
             self.url_input.setEnabled(enabled)
             self.lang_combo1.setEnabled(enabled)
         elif tab == 2:
             self.submit_button2.setEnabled(enabled)
+            self.submit_button2.setText("提交" if enabled else "⏳ 处理中…")
             self.select_btn.setEnabled(enabled)
             self.lang_combo2.setEnabled(enabled)
     
@@ -501,40 +575,57 @@ class MainWindow(QMainWindow):
         self.asr = model
         self.log("语音识别模型加载完成！", "success", 1)
         self.log("语音识别模型加载完成！", "success", 2)
-
+        self.status_model.setText("🟢 ASR 就绪")
+        self.status_model.setStyleSheet("color: #16a34a; padding: 0 6px;")
 
     def _on_model_error(self, error_msg):
         """模型加载错误的回调"""
         self.log(f"模型加载失败：{error_msg}", "error", 1)
         self.log(f"模型加载失败：{error_msg}", "error", 2)
+        self.status_model.setText("🔴 ASR 加载失败")
+        self.status_model.setStyleSheet("color: #dc2626; padding: 0 6px;")
         QMessageBox.critical(self, "错误", f"模型加载失败：{error_msg}")
 
     # ====== LLM backend + 设置 ======
 
     def _on_llm_loaded(self, backend):
         self.llm_backend = backend
-        self.log(f"LLM backend 就绪: {backend}", "info", 1)
+        self.log(f"LLM backend 就绪: {backend}", "success", 1)
+        try:
+            provider = getattr(backend.config, "provider", "?")
+            model = getattr(backend.config, "model", "?")
+            self.status_llm.setText(f"🟢 LLM: {provider}/{model}")
+        except Exception:
+            self.status_llm.setText("🟢 LLM 就绪")
+        self.status_llm.setStyleSheet("color: #16a34a; padding: 0 6px;")
 
     def _on_llm_error(self, error_msg):
         self.llm_backend = None
         self.log(f"LLM backend 初始化失败：{error_msg}", "error", 1)
         self.log("翻译/总结功能将不可用，修复后点击 ⚙ 重新设置", "warning", 1)
+        self.status_llm.setText("🔴 LLM 不可用")
+        self.status_llm.setStyleSheet("color: #dc2626; padding: 0 6px;")
 
     def _reload_llm_backend_async(self):
         """设置保存后异步重建 backend"""
         self.llm_backend = None
+        self.status_llm.setText("⏳ LLM 重建中…")
+        self.status_llm.setStyleSheet("color: #d97706; padding: 0 6px;")
         self.llm_loader = LLMBackendInitThread()
         self.llm_loader.finished.connect(self._on_llm_loaded)
         self.llm_loader.error.connect(self._on_llm_error)
         self.llm_loader.start()
 
     def open_settings(self):
-        """弹出设置对话框；保存后立即重建 LLM backend（ASR 改动需重启）"""
+        """弹出设置对话框；保存后立即重建 LLM backend（ASR 改动需重启）
+
+        注意：parent 必须传可见的 self.ui（不是 self），否则对话框定位到屏幕外无法拖拽。
+        """
         try:
-            result = settings_dialog.open_settings(self)
+            result = settings_dialog.open_settings(self.ui)
             if result:  # 用户点了保存
                 self._reload_llm_backend_async()
-                self.log("设置已保存。LLM 立即生效，ASR 模型改动需重启。", "info", 1)
+                self.log("设置已保存。LLM 立即生效，ASR 模型改动需重启。", "success", 1)
         except Exception as e:
             QMessageBox.critical(self, "打开设置失败", str(e))
 
@@ -556,27 +647,38 @@ class MainWindow(QMainWindow):
             self.pin_button.setText("📌")
         self.ui.show()
 
-    def resizeEvent(self, event):
-        """处理窗口大小改变事件"""
-        super().resizeEvent(event)
-        # 更新固定按钮位置（右下）
+    def _position_floating_buttons(self):
+        """定位右下角固定按钮 + 左下角设置按钮（监听 self.ui 的 Resize 事件）"""
+        if not hasattr(self, 'ui') or self.ui is None:
+            return
+        margin = 10
         if hasattr(self, 'pin_button'):
-            margin = 10
             self.pin_button.move(
                 self.ui.width() - self.pin_button.width() - margin,
                 self.ui.height() - self.pin_button.height() - margin
             )
-        # 更新设置按钮位置（左下，与 pin 按钮对角）
         if hasattr(self, 'settings_button'):
-            margin = 10
             self.settings_button.move(
                 margin,
                 self.ui.height() - self.settings_button.height() - margin
             )
 
+    def eventFilter(self, obj, event):
+        """监听 self.ui 的尺寸变化，保持悬浮按钮贴在角落"""
+        if obj is self.ui and event.type() == QEvent.Type.Resize:
+            self._position_floating_buttons()
+        return super().eventFilter(obj, event)
+
+    def resizeEvent(self, event):
+        """处理窗口大小改变事件（MainWindow 自身；self.ui 的变化走 eventFilter）"""
+        super().resizeEvent(event)
+        self._position_floating_buttons()
+
 
 def main():
     app = QApplication(sys.argv)
+    # 应用统一主题（Fusion + 浅色 palette + QSS）
+    ui_theme.apply_theme(app)
     # 设置应用程序图标
     app_icon = QIcon("AI视频转文字.ico")
     app.setWindowIcon(app_icon)

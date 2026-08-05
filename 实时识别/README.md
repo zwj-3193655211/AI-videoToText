@@ -73,7 +73,7 @@ funasr
 - `subtitle.py`: 字幕窗口实现
 - `translate_subtitle.py`: 翻译字幕窗口实现
 - `settings_manager.py`: 设置管理模块
-- `translator_1.py`: 翻译功能实现
+- `translator.py`: 翻译功能实现
 - `subtitle.ui`: 字幕窗口UI文件
 - `translate_subtitle.ui`: 翻译字幕窗口UI文件
 - `subtitle_settings.json`: 字幕设置配置文件

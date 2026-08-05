@@ -1,5 +1,5 @@
 """
-实时翻译模块 - 使用千问模型实现实时翻译功能
+实时翻译模块 - 复用项目统一 LLM 后端（Ollama 本地 / DeepSeek 云端）
 
 主要功能：
 1. 实时文本翻译
@@ -12,9 +12,14 @@
 主要类：
 - TranslationWorker: 翻译工作线程
 - TranslationManager: 翻译管理器
+
+配置说明：
+翻译服务商跟随项目根目录 .env（LLM_PROVIDER=ollama / deepseek），
+与主程序设置面板共用一套配置。
 """
 
 import os
+import sys
 import time
 import threading
 import requests
@@ -24,6 +29,11 @@ from queue import Queue
 from datetime import datetime
 from PySide6.QtCore import QObject, Signal
 import logging
+
+# 注入项目根目录，复用 llm_backend（与主程序同源配置）
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 
 def _ensure_ollama_running():
@@ -84,42 +94,44 @@ SUPPORTED_LANGUAGES = [
 ]
 
 class TranslationEngine:
-    """翻译引擎基类"""
+    """翻译引擎（复用项目统一 LLM 后端：Ollama 本地 / DeepSeek 云端）
+
+    后端由根目录 .env 的 LLM_PROVIDER 决定，与主程序设置面板共用配置：
+      - ollama  : 本地 Ollama（自动拉起 serve）
+      - deepseek: DeepSeek V4 云端 API（需要 DEEPSEEK_API_KEY）
+    """
+    _backend = None        # 类级缓存：避免每个翻译 worker 重复初始化后端
+    _backend_error = None
+
     def __init__(self):
-        self.model = "qwen3-0.6b"
+        self.model = "llm_backend"
+        if TranslationEngine._backend is None and TranslationEngine._backend_error is None:
+            try:
+                from llm_backend import get_backend
+                backend = get_backend(auto_start_ollama=True)
+                TranslationEngine._backend = backend
+                cfg = backend.config
+                logging.info(f"翻译后端就绪: {cfg.provider}/{cfg.model}")
+            except Exception as e:
+                TranslationEngine._backend_error = str(e)
+                logging.error(f"LLM 后端初始化失败: {e}")
 
     def _call_qwen_model(self, prompt: str) -> str:
-        """调用千问模型"""
-        # 确保 Ollama 服务正在运行
-        if not _ensure_ollama_running():
-            raise Exception("Ollama 服务未能启动")
-        
+        """调用统一 LLM 后端（Ollama / DeepSeek）"""
+        backend = TranslationEngine._backend
+        if backend is None:
+            raise Exception(f"LLM 后端不可用: {TranslationEngine._backend_error or '未初始化'}")
         try:
-            response = requests.post(
-                "http://localhost:11434/api/chat",
-                headers={"Content-Type": "application/json"},
-                json={
-                    "model": "qwen2.5-vl-7b",
-                    "messages": [
-                        {"role": "user", "content": prompt}
-                    ],
-                    "stream": False
-                }
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                text = result["message"]["content"].strip()
-                # 移除<think>标签及其内容
-                text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-                # 移除其他<>包围的标签
-                text = re.sub(r'<[^>]+>', '', text)
-                return text
-            else:
-                raise Exception(f"模型调用失败: {response.status_code}")
-                
+            result = backend.chat(prompt)
         except Exception as e:
             raise Exception(f"调用模型出错: {str(e)}")
+        if not result or not result.strip():
+            raise Exception("模型未返回结果（请检查 API Key / 模型配置，可到主程序 ⚙ 设置里配置）")
+        # 移除 <think> 标签及其内容
+        text = re.sub(r'<think>.*?</think>', '', result, flags=re.DOTALL)
+        # 移除其他 <> 包围的标签
+        text = re.sub(r'<[^>]+>', '', text).strip()
+        return text
 
     def translate(self, text, target_lang):
         try:
@@ -129,9 +141,8 @@ class TranslationEngine:
             line_breaks = [i for i, char in enumerate(text) if char == '\n']
             
             # 构建翻译提示，特别强调保持换行
-            prompt = f"""请保持语言自然流畅，将以下文本翻译成{target_lang}，
-                            {text}
-                            /no_think"""
+            prompt = f"""请保持语言自然流畅，将以下文本翻译成{target_lang}：
+{text}"""
             
             # 执行翻译
             result = self._call_qwen_model(prompt)

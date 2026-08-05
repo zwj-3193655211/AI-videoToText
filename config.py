@@ -81,7 +81,7 @@ LLM_CONCURRENCY = get("LLM_CONCURRENCY", "2", int)
 # ASR
 # 后端：funasr（基石，默认）/ faster-whisper（可选，需自行下载模型）
 ASR_BACKEND = get("ASR_BACKEND", "funasr")
-# 模型：offline（默认，Paraformer+VAD+标点）/ streaming（流式，预留实时识别）
+# 模型：offline（唯一，Paraformer + VAD + 标点，实时/离线通用）
 ASR_MODEL = get("ASR_MODEL", "offline")
 # 模型根目录（download.py 下载到的位置，默认项目根 ./model）
 ASR_MODEL_DIR = get("ASR_MODEL_DIR", "") or None

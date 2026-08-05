@@ -1,22 +1,29 @@
 import os
+import sys
 import soundcard as sc
 import numpy as np
 import logging
 from datetime import datetime
 import torch
-from funasr import AutoModel
-from funasr.utils.postprocess_utils import rich_transcription_postprocess
+# 复用项目根目录的统一 ASR 后端（路径/GPU/VAD/标点全部由 asr_backend 管理）
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+# 本目录优先，避免与根目录同名模块（translator.py）歧义
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _THIS_DIR not in sys.path:
+    sys.path.insert(0, _THIS_DIR)
+from asr_backend import FunASRBackend
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QPushButton, QTextEdit, QLabel,
                                QComboBox, QSpinBox, QMessageBox, QDoubleSpinBox,
                                QCheckBox, QSizePolicy)
 from PySide6.QtCore import Qt, Signal, QThread, QTimer
-import sys
-from subtitle import SubtitleWindow
-from translate_subtitle import TranslateSubtitleWindow
+import subtitle as _subtitle_mod
+SubtitleWindow = _subtitle_mod.SubtitleWindow
 import threading
 from PySide6.QtGui import QIcon
-from translator_1 import TranslationWorker, TranslationManager
+from translator import TranslationWorker, TranslationManager
 from queue import Queue
 import time
 import re
@@ -136,16 +143,16 @@ class TranscriptionThread(QThread):
         self.audio_queue = Queue()  # 新增音频数据队列
         self.last_sequence = -1  # 用于跟踪处理顺序
 
-        # 设置输出文件路径
+        # 设置输出文件路径（固定存到实时识别目录下，与启动目录无关）
         if output_file is None:
             # 创建原文目录
-            output_dir = "原文"
+            output_dir = os.path.join(_THIS_DIR, "原文")
             os.makedirs(output_dir, exist_ok=True)
             # 使用时间戳创建文件名
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             self.output_file = os.path.join(output_dir, f"transcript_{timestamp}.txt")
             # 创建输出目录
-            output_dir = "翻译"
+            output_dir = os.path.join(_THIS_DIR, "翻译")
             os.makedirs(output_dir, exist_ok=True)
             self.translation_file = os.path.join(output_dir, f"translation_{timestamp}.txt")
         else:
@@ -156,6 +163,7 @@ class TranscriptionThread(QThread):
         self.subtitle_index = 1
         self.last_text = ""  # 用于存储上一段文本
         self.model = None
+        self.asr = None
         self.buffer_text = ""  # 用于存储待发送的文本
         self.target_language = "zh"  # 默认目标语言为中文
         self.enable_translation = False  # 默认不启用翻译
@@ -185,26 +193,23 @@ class TranscriptionThread(QThread):
                 self.error_signal.emit(f"音频数据序号不连续: 期望 {self.last_sequence + 1}, 实际 {buffer_obj.sequence}")
                 return
 
-            # 使用SenseVoice模型进行转录
-            res = self.model.generate(
+            # 使用 Paraformer 模型进行转录（offline: VAD 过滤静音 + 标点恢复）
+            res = self.asr.model.generate(
                 input=buffer_obj.data,
-                cache={},
-                language="auto",
-                use_itn=True,
-                batch_size_s=60,
-                merge_vad=True,
-                merge_length_s=15
+                **self.asr._gen_kwargs
             )
 
             if res and len(res) > 0:
-                text = rich_transcription_postprocess(res[0]["text"])
+                text = str(res[0].get("text", ""))
+                # 兜底清理 <|...|> 标签（SenseVoice 风格，Paraformer 一般没有）
+                text = re.sub(r"<\|[^|]+\|>", "", text).strip()
                 if text:
                     # 去除表情符号
                     text = re.sub(r'[\U0001F000-\U0001F9FF]', '', text)
                     # 去除多余的换行符
                     text = re.sub(r'\n+', '\n', text).strip()
 
-                    # 检查是否需要分割句子
+                    # 检查是否需要分割句子（上一段是未完成的续句）
                     if self.last_text and not text.startswith(('，', '。', '！', '？', '；', '：', '、')):
                         text = self.last_text + text
                         self.last_text = ""
@@ -260,25 +265,12 @@ class TranscriptionThread(QThread):
             self._stop_event.clear()  # 清除停止事件
             self.status_signal.emit("正在初始化转录模型...")
 
-            # 初始化SenseVoice模型
-            self.model = AutoModel(
-                model=r"..\model\sensevoice\iic\SenseVoiceSmall",
-                trust_remote_code=True,
-                vad_model=r"..\model\vad\iic\speech_fsmn_vad_zh-cn-16k-common-pytorch",
-                vad_kwargs={
-                    "max_single_segment_time": 3000,  # 最大单段时长
-                    "min_speech_duration_ms": 100,  # 最小语音片段时长
-                    "max_speech_duration_s": 2,  # 最大语音片段时长
-                    "min_silence_duration_ms": 800,  # 最小静音时长（用于句子分割）
-                    "window_size_samples": 1024,  # 窗口大小
-                    "speech_pad_ms": 30,  # 语音片段前后填充
-                    "threshold": 0.5,  # VAD 阈值
-                    "silence_threshold": 0.5,  # 静音检测阈值
-                    "speech_threshold": 0.5,  # 语音检测阈值
-                    "merge_speech_segments": True,  # 合并相邻语音片段
-                    "merge_silence_segments": True  # 合并相邻静音片段
-                },
-                device="cuda:0" if torch.cuda.is_available() else "cpu"
+            # 初始化 Paraformer 模型（复用项目统一 ASR 后端：offline + VAD + 标点）
+            model_root = os.path.join(_PROJECT_ROOT, "model")
+            self.asr = FunASRBackend(
+                model_name="offline",
+                model_root=model_root,
+                disable_update=True,
             )
 
             self.status_signal.emit("转录模型初始化完成")
@@ -501,10 +493,16 @@ class MainWindow(QMainWindow):
         self.language_combo.setFixedWidth(100)
         self.language_combo.currentTextChanged.connect(self.on_language_changed)
 
-        # 添加翻译服务勾选框
-        self.translation_checkbox = QCheckBox("启用翻译")
-        self.translation_checkbox.setChecked(False)
-        self.translation_checkbox.stateChanged.connect(self.on_translation_changed)
+        # 识别模型：固定使用 Paraformer-Offline（+ VAD + 标点），准确优先
+
+        # 字幕显示模式（统一窗口：仅原文 / 仅翻译 / 原文+翻译）
+        self.mode_label = QLabel("字幕显示:")
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["仅原文", "仅翻译", "原文+翻译"])
+        saved_mode = SettingsManager().get_display_mode()
+        self.mode_combo.setCurrentIndex({"original": 0, "translation": 1, "both": 2}.get(saved_mode, 0))
+        self.mode_combo.setFixedWidth(110)
+        self.mode_combo.currentIndexChanged.connect(self.on_display_mode_changed)
 
         # 开始/停止按钮
         self.start_button = QPushButton("开始")
@@ -526,7 +524,8 @@ class MainWindow(QMainWindow):
         control_layout.addWidget(self.sample_rate_combo)
         control_layout.addWidget(self.language_label)
         control_layout.addWidget(self.language_combo)
-        control_layout.addWidget(self.translation_checkbox)
+        control_layout.addWidget(self.mode_label)
+        control_layout.addWidget(self.mode_combo)
         control_layout.addStretch()  # 添加弹性空间
         control_layout.addWidget(self.start_button)
         control_layout.addWidget(self.stop_button)
@@ -569,45 +568,38 @@ class MainWindow(QMainWindow):
         self.transcription_thread = None
         self.is_stopping = False
 
-        # 初始化字幕窗口
+        # 初始化字幕窗口（统一窗口，显示模式由下拉决定）
         self.subtitle_window = None
-        self.translate_window = None
         self._create_subtitle_windows()
 
         # 添加变量跟踪是否有可用的转录内容
         self.has_available_content = False
 
     def _create_subtitle_windows(self):
-        """创建字幕窗口"""
-        # 如果窗口已存在，先关闭它们
+        """创建字幕窗口（统一窗口，不再单独创建翻译窗口）"""
+        # 如果窗口已存在，先关闭它
         if self.subtitle_window:
             self.subtitle_window.close()
-        if self.translate_window:
-            self.translate_window.close()
 
-        # 创建新的字幕窗口
+        # 创建新的字幕窗口（模式从下拉同步）
         self.subtitle_window = SubtitleWindow()
+        self.subtitle_window.set_mode(["original", "translation", "both"][self.mode_combo.currentIndex()])
         self.subtitle_window.show()
 
-        # 创建翻译字幕窗口（初始隐藏）
-        self.translate_window = TranslateSubtitleWindow()
-        self.translate_window.hide()
-
     def on_language_changed(self, language):
-        """处理语言选择改变"""
+        """处理语言选择改变（运行中可随时切换，后续翻译立即用新语言）"""
         if self.transcription_thread:
             self.transcription_thread.set_target_language(language)
 
-    def on_translation_changed(self, state):
-        """处理翻译复选框状态改变"""
-        if state == Qt.Checked:
-            if self.transcription_thread:
-                self.transcription_thread.set_enable_translation(True)
-            self.translate_window.show()
-        else:
-            if self.transcription_thread:
-                self.transcription_thread.set_enable_translation(False)
-            self.translate_window.hide()
+    def on_display_mode_changed(self, index):
+        """处理字幕显示模式改变：仅原文(不翻译) / 仅翻译 / 原文+翻译"""
+        mode = ["original", "translation", "both"][index]
+        if self.subtitle_window:
+            self.subtitle_window.set_mode(mode)
+        # 翻译开关跟随模式：仅原文不需要翻译
+        need_translation = mode != "original"
+        if self.transcription_thread:
+            self.transcription_thread.set_enable_translation(need_translation)
 
     def start_capture(self):
         """开始捕获音频"""
@@ -629,10 +621,11 @@ class MainWindow(QMainWindow):
             self.audio_thread.error_signal.connect(self.show_error)
             self.audio_thread.start()
 
-            # 创建并启动转录线程
+            # 创建并启动转录线程（Paraformer-Offline + VAD + 标点）
+            need_translation = self.mode_combo.currentIndex() != 0  # 仅原文不翻译
             self.transcription_thread = TranscriptionThread()
             self.transcription_thread.set_target_language(self.get_language_code())
-            self.transcription_thread.set_enable_translation(self.translation_checkbox.isChecked())
+            self.transcription_thread.set_enable_translation(need_translation)
             self.transcription_thread.text_signal.connect(self.update_subtitle)
             self.transcription_thread.translation_signal.connect(self.update_translation)
             self.transcription_thread.status_signal.connect(self.update_status)
@@ -644,17 +637,11 @@ class MainWindow(QMainWindow):
 
             self.transcription_thread.start()
 
-            # 如果启用了翻译，显示翻译窗口
-            if self.translation_checkbox.isChecked():
-                self.translate_window.show()
-
-            # 更新按钮状态
+            # 更新按钮状态（语言/字幕模式保持可切换，采样率需停止后改）
             self.start_button.setEnabled(False)
             self.stop_button.setEnabled(True)
             self.summary_button.setEnabled(True)  # 启用生成总结按钮
             self.sample_rate_combo.setEnabled(False)
-            self.language_combo.setEnabled(False)
-            self.translation_checkbox.setEnabled(False)
 
         except Exception as e:
             QMessageBox.critical(self, "错误", f"启动失败: {str(e)}")
@@ -663,8 +650,6 @@ class MainWindow(QMainWindow):
             self.stop_button.setEnabled(False)
             self.summary_button.setEnabled(False)
             self.sample_rate_combo.setEnabled(True)
-            self.language_combo.setEnabled(True)
-            self.translation_checkbox.setEnabled(True)
 
     def get_language_code(self):
         """获取语言代码"""
@@ -693,8 +678,6 @@ class MainWindow(QMainWindow):
             self.start_button.setEnabled(True)
             self.stop_button.setEnabled(False)
             self.sample_rate_combo.setEnabled(True)
-            self.language_combo.setEnabled(True)
-            self.translation_checkbox.setEnabled(True)
 
             # 检查是否可以生成总结
             if self.transcription_thread and self.transcription_thread.has_content:
@@ -710,12 +693,14 @@ class MainWindow(QMainWindow):
             self.is_stopping = False
 
     def update_subtitle(self, text):
-        """更新字幕显示"""
-        self.subtitle_window.update_subtitle(text)
+        """更新原文字幕显示（统一窗口）"""
+        if self.subtitle_window:
+            self.subtitle_window.update_original(text)
 
     def update_translation(self, text):
-        """更新翻译字幕显示"""
-        self.translate_window.update_subtitle(text)
+        """更新翻译字幕显示（统一窗口，异步到达后刷新）"""
+        if self.subtitle_window:
+            self.subtitle_window.update_translation(text)
 
     def update_status(self, text):
         """更新状态显示"""
@@ -729,7 +714,6 @@ class MainWindow(QMainWindow):
         """窗口关闭事件"""
         self.stop_capture()
         self.subtitle_window.close()  # 关闭字幕窗口
-        self.translate_window.close()  # 关闭翻译字幕窗口
         event.accept()
 
     def resizeEvent(self, event):
@@ -751,8 +735,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "警告", "没有可用的转录内容来生成总结")
                 return
 
-            # 创建总结目录
-            summary_dir = "总结"
+            # 创建总结目录（固定存到实时识别目录下）
+            summary_dir = os.path.join(_THIS_DIR, "总结")
             os.makedirs(summary_dir, exist_ok=True)
 
             # 使用时间戳创建文件名

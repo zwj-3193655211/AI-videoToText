@@ -38,6 +38,7 @@ class LLMBackend(ABC):
 
     def __init__(self, config: LLMConfig):
         self.config = config
+        self.last_error: Optional[Exception] = None  # 最近一次请求的错误详情
 
     @abstractmethod
     def chat(
@@ -57,11 +58,20 @@ class LLMBackend(ABC):
         测试连接是否可用
         :return: (success, message)
         """
+        if self.config.provider == "deepseek" and not self.config.api_key:
+            return False, "✗ 未配置 DeepSeek API Key"
+        if self.config.provider == "deepseek" and self.config.api_key.startswith("sk-xxxx"):
+            return False, "✗ 当前是示例占位 Key（sk-xxxx…），请粘贴真实 API Key"
         try:
+            t0 = time.time()
             resp = self.chat("回复 OK", temperature=0.0)
-            if resp and len(resp) > 0:
-                return True, f"✓ {self.config.provider}/{self.config.model} 连接正常"
-            return False, "✗ 返回为空"
+            elapsed = time.time() - t0
+            if resp and len(resp.strip()) > 0:
+                return True, f"✓ 连接正常 · {self.config.model}（{elapsed:.1f}s）"
+            detail = f"：{self.last_error}" if self.last_error else ""
+            if self.config.provider == "ollama":
+                return False, f"✗ Ollama 未响应，请确认服务已启动{detail}"
+            return False, f"✗ API 返回为空，请检查 Key / Base URL / 模型名{detail}"
         except Exception as e:
             return False, f"✗ {type(e).__name__}: {e}"
 
@@ -152,6 +162,7 @@ class OllamaBackend(LLMBackend):
             text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
             return text
         except Exception as e:
+            self.last_error = e
             return None
 
 
@@ -193,6 +204,7 @@ class DeepSeekBackend(LLMBackend):
             data = r.json()
             return data["choices"][0]["message"]["content"].strip()
         except Exception as e:
+            self.last_error = e
             return None
 
 

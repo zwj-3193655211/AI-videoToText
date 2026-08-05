@@ -2,9 +2,8 @@
 语音识别（ASR）后端抽象与实现
 
 - ASRBackend: 抽象基类
-- FunASRBackend: FunASR / Paraformer 实现（项目基石，默认后端）
-  - paraformer-offline + FSMN-VAD + CT-PUNC（离线中文 ASR，带标点）
-  - paraformer-streaming（流式，预留，供实时识别使用）
+- FunASRBackend: FunASR / Paraformer 实现（项目基石，唯一后端）
+  - paraformer-offline + FSMN-VAD + CT-PUNC（中文 ASR，带标点，实时/离线通用）
 - FasterWhisperBackend: faster-whisper 实现（可选，需自行下载 whisper 模型）
 
 设计原则：
@@ -91,13 +90,13 @@ class FunASRBackend(ASRBackend):
     """
     FunASR / Paraformer 后端（项目基石）
 
-    - offline（默认）: Paraformer-Large + FSMN-VAD + CT-PUNC
+    - offline（唯一）: Paraformer-Large + FSMN-VAD + CT-PUNC
         - 中文 ASR 高精度，输出带标点
         - 模型位置由 config.ASR_MODEL_DIR 指定，默认 ./model
-    - streaming（预留）: Paraformer-Streaming，供实时识别使用
+        - VAD（语音活动检测/切句）与 PUNC（标点恢复）内置，实时与离线场景通用
 
     模型路径结构（download.py 下载的基石）:
-      model/vad/  model/punc/  model/paraformer/paraformer-offline/  model/paraformer/paraformer-streaming/
+      model/vad/  model/punc/  model/paraformer/paraformer-offline/
     """
 
     # 默认模型目录结构（相对 ASR_MODEL_DIR）
@@ -106,8 +105,6 @@ class FunASRBackend(ASRBackend):
         "punc": Path("punc") / "punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
         "offline": Path("paraformer") / "paraformer-offline" / "iic"
                    / "speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-        "streaming": Path("paraformer") / "paraformer-streaming" / "iic"
-                     / "speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online",
     }
 
     def __init__(
@@ -121,7 +118,7 @@ class FunASRBackend(ASRBackend):
         # 延迟导入：避免不切换后端时白白加载 funasr
         from funasr import AutoModel
 
-        model_name = model_name or config.ASR_MODEL          # offline / streaming
+        model_name = model_name or config.ASR_MODEL          # 兼容旧值，仅 offline 生效
         device = device or config.ASR_DEVICE                 # auto / cuda / cpu
         use_punc = config.ASR_USE_PUNC if use_punc is None else use_punc
         model_root = Path(model_root or config.ASR_MODEL_DIR or "model")
@@ -135,39 +132,29 @@ class FunASRBackend(ASRBackend):
 
         # 解析模型路径
         offline_dir = model_root / self._MODEL_REL["offline"]
-        streaming_dir = model_root / self._MODEL_REL["streaming"]
         vad_dir = model_root / self._MODEL_REL["vad"]
         punc_dir = model_root / self._MODEL_REL["punc"]
 
         self._device = device
-        self._model_name = model_name
+        self._model_name = "offline"
         self._use_punc = use_punc
 
-        if model_name == "streaming":
-            assert streaming_dir.exists(), f"流式模型缺失: {streaming_dir}（请运行 python download.py）"
-            print(f"[ASR] 加载 Paraformer-Streaming @ {device}")
-            self.model = AutoModel(
-                model=str(streaming_dir), device=device, disable_update=disable_update,
-            )
-            # 流式模型内部按 chunk 处理，无 VAD、无 PUNC，batch 强制 1
-            self._gen_kwargs = dict(batch_size=1, chunk_size=[0, 10, 5])
-        else:
-            # offline（默认）：VAD + 可选 PUNC
-            assert offline_dir.exists(), f"离线模型缺失: {offline_dir}（请运行 python download.py）"
-            assert (vad_dir / "model.pt").exists(), f"VAD 模型缺失: {vad_dir}（请运行 python download.py）"
-            print(f"[ASR] 加载 Paraformer-Offline + FSMN-VAD" + (" + CT-PUNC" if use_punc else "") + f" @ {device}")
-            kwargs = dict(
-                model=str(offline_dir),
-                vad_model=str(vad_dir),
-                vad_kwargs={"max_single_segment_time": 30000},
-                device=device,
-                disable_update=disable_update,
-            )
-            if use_punc:
-                assert (punc_dir / "model.pt").exists(), f"标点模型缺失: {punc_dir}（请运行 python download.py）"
-                kwargs["punc_model"] = str(punc_dir)
-            self.model = AutoModel(**kwargs)
-            self._gen_kwargs = dict(batch_size_s=60)
+        # offline（唯一后端）：VAD + 可选 PUNC
+        assert offline_dir.exists(), f"离线模型缺失: {offline_dir}（请运行 python download.py）"
+        assert (vad_dir / "model.pt").exists(), f"VAD 模型缺失: {vad_dir}（请运行 python download.py）"
+        print(f"[ASR] 加载 Paraformer-Offline + FSMN-VAD" + (" + CT-PUNC" if use_punc else "") + f" @ {device}")
+        kwargs = dict(
+            model=str(offline_dir),
+            vad_model=str(vad_dir),
+            vad_kwargs={"max_single_segment_time": 30000},
+            device=device,
+            disable_update=disable_update,
+        )
+        if use_punc:
+            assert (punc_dir / "model.pt").exists(), f"标点模型缺失: {punc_dir}（请运行 python download.py）"
+            kwargs["punc_model"] = str(punc_dir)
+        self.model = AutoModel(**kwargs)
+        self._gen_kwargs = dict(batch_size_s=60)
 
     @property
     def device(self) -> str:
@@ -199,8 +186,7 @@ class FunASRBackend(ASRBackend):
         if language:
             gen_kwargs["language"] = language
         # 字级时间戳（Paraformer LFR-6，帧索引，每帧=60ms）
-        if self._model_name != "streaming":
-            gen_kwargs["pred_timestamp"] = True
+        gen_kwargs["pred_timestamp"] = True
 
         result = self.model.generate(**gen_kwargs)
         if progress_callback:

@@ -1,5 +1,6 @@
 {
     "buffer_duration": 2.0,
+    "display_mode": "translation",
     "subtitle": {
         "opacity": 0.5,
         "font_size": 24
