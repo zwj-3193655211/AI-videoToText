@@ -10,7 +10,13 @@ import os
 import re
 from typing import Optional
 
+import zhconv
 from asr_backend import ASRBackend, FasterWhisperBackend, ProgressCallback, TranscribeResult
+
+
+def to_simplified(text: str) -> str:
+    """繁转简：Whisper 默认输出繁体，统一转简体"""
+    return zhconv.convert(text, 'zh-cn')
 
 
 class LocalASR:
@@ -58,6 +64,10 @@ class LocalASR:
                 print("识别结果为空")
                 return None
 
+            # 繁转简：Whisper 默认输出繁体，统一转简体
+            full_text = to_simplified(result.text)
+            segments_text = [(s.start, s.end, to_simplified(s.text)) for s in result.segments]
+
             # 创建输出目录
             output_dir = os.path.join(os.getcwd(), "原文")
             os.makedirs(output_dir, exist_ok=True)
@@ -65,11 +75,11 @@ class LocalASR:
 
             # 写入：全文 + 段级时间戳
             with open(output_path, "w", encoding="utf-8") as f:
-                f.write(result.text + "\n")
-                if result.segments:
+                f.write(full_text + "\n")
+                if segments_text:
                     f.write("\n--- 段级时间戳 ---\n")
-                    for seg in result.segments:
-                        f.write(f"[{seg.start:7.2f}s - {seg.end:7.2f}s] {seg.text.strip()}\n")
+                    for start, end, text in segments_text:
+                        f.write(f"[{start:7.2f}s - {end:7.2f}s] {text.strip()}\n")
                 f.write(f"\n# 语言: {result.language} ({result.language_probability:.2%})\n")
                 f.write(f"# 时长: {result.duration:.1f}s\n")
 

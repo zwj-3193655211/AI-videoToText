@@ -12,3 +12,4 @@ ffmpeg-python>=0.2.0
 soundcard>=0.4.2
 faster-whisper>=1.0.0
 python-dotenv>=1.0.0
+zhconv>=1.4.0

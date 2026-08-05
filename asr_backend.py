@@ -13,6 +13,9 @@
 from __future__ import annotations
 
 import os
+# 必须在 import torch/ctranslate2 之前设置，否则 conda + faster-whisper 会有 OpenMP 重复加载问题
+os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
+
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field

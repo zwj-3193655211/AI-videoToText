@@ -79,7 +79,7 @@ LLM_TEMPERATURE = get("LLM_TEMPERATURE", "0.3", float)
 LLM_CONCURRENCY = get("LLM_CONCURRENCY", "2", int)
 
 # ASR
-ASR_MODEL = get("ASR_MODEL", "Systran/faster-whisper-large-v3")
+ASR_MODEL = get("ASR_MODEL", "Systran/faster-whisper-medium")
 ASR_MODEL_DIR = get("ASR_MODEL_DIR", "") or None
 ASR_DEVICE = get("ASR_DEVICE", "auto")  # auto / cuda / cpu
 ASR_COMPUTE_TYPE = get("ASR_COMPUTE_TYPE", "float16")
