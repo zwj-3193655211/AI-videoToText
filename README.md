@@ -1,10 +1,11 @@
 # AI视频转文字工具
 
-一个功能强大的视频/音频转文字工具，支持 B 站视频解析、本地文件转录、DeepSeek/Ollama 翻译总结、实时字幕识别。
+一个功能强大的视频/音频转文字工具，支持 **B 站 / 抖音 / 本地文件** 多种视频链接解析、DeepSeek/Ollama 翻译总结、实时字幕识别。
 
 ## 功能特点
 
-- **B 站视频解析**：自动获取 Cookie 提取音频，无需手动配置
+- **多平台视频解析**：B 站（BV号 / bilibili.com / b23.tv 短链，直连失败自动切 yt-dlp 兜底）+ 抖音（H5 分享页直连 → 浏览器 cookie → API CDN 多级方案），混合文本里带链接也能识别
+- **本地文件转录**：支持视频/音频文件（mp4 / avi / mov / mp3 / m4a）
 - **本地文件转录**：支持视频/音频文件（mp4 / avi / mov / mp3 / m4a）
 - **高精度语音识别**：FunASR Paraformer-Large + FSMN-VAD + CT-PUNC 标点（唯一后端，实时/离线通用）
 - **翻译与总结独立勾选**：可选"生成翻译" / "生成总结" / 两者
@@ -25,6 +26,11 @@ python download.py
 ```
 
 > 系统需安装 **ffmpeg**（视频转音频用）：https://ffmpeg.org/
+>
+> 可选：**yt-dlp**（B 站直连失败时的兜底下载器，增强稳定性）
+> ```bash
+> pip install yt-dlp
+> ```
 
 ## 配置（.env）
 

@@ -25,3 +25,9 @@ zhconv>=1.4.0
 #
 # ffmpeg：视频转音频需要系统安装 ffmpeg 命令（https://ffmpeg.org/）
 #   Windows: winget install ffmpeg 或下载安装包后加入 PATH
+
+# ===== 可选依赖 =====
+# yt-dlp：B 站直连失败时的兜底下载器（不装也能用，装了更稳）
+#   安装：pip install yt-dlp
+# selenium：抖音浏览器方案（H5 直连失败时自动降级）
+#   安装：pip install selenium

@@ -46,7 +46,7 @@
       </property>
       <widget class="QWidget" name="tab">
        <attribute name="title">
-        <string>B站视频解析</string>
+        <string>视频解析（B站/抖音）</string>
        </attribute>
        <layout class="QVBoxLayout" name="verticalLayout_tab1">
         <property name="spacing">

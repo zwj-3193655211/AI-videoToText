@@ -19,6 +19,9 @@ B站视频音频提取模块
 """
 
 import requests  # 用于发送HTTP请求
+import shutil  # 用于查找可执行文件
+import subprocess  # 用于调用 yt-dlp
+import sys
 import re  # 用于正则表达式匹配
 import json  # 用于解析JSON数据
 import os  # 用于文件和目录操作
@@ -72,6 +75,56 @@ def get_bilibili_cookie(log_callback=None):
     except Exception as e:
         log(f"获取cookie时发生未知错误：{str(e)}", "error")
         return None
+
+
+def _download_with_ytdlp(url, output_dir, log):
+    """
+    requests 直连失败时用 yt-dlp 兜底下载音频（可选增强，不装也能用）
+
+    Returns:
+        tuple: (音频文件名, 标题) 或 (None, None)
+    """
+    yt = shutil.which("yt-dlp")
+    cmd_prefix = None
+    if yt:
+        cmd_prefix = [yt]
+    else:
+        try:
+            import yt_dlp  # noqa: F401
+            cmd_prefix = [sys.executable, "-m", "yt_dlp"]
+        except ImportError:
+            log("未安装 yt-dlp，跳过兜底（pip install yt-dlp 可增强成功率）", "warning")
+            return None, None
+    log("⚠️ 直连失败，切换 yt-dlp 兜底...", "info")
+
+    out_pattern = os.path.join(output_dir, "%(title)s.%(ext)s")
+    cmd = cmd_prefix + [
+        "--no-playlist",
+        "-f", "ba/b",          # 最佳音频，视频兜底
+        "-x", "--audio-format", "m4a",
+        "-o", out_pattern,
+        url,
+    ]
+    try:
+        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           creationflags=flags, timeout=900)
+        if r.returncode != 0:
+            log(f"yt-dlp 失败：{(r.stderr or '')[-200:]}", "error")
+            return None, None
+    except Exception as e:
+        log(f"yt-dlp 异常：{e}", "error")
+        return None, None
+
+    exts = (".m4a", ".mp3", ".webm", ".aac")
+    files = [f for f in os.listdir(output_dir) if f.lower().endswith(exts)]
+    if not files:
+        log("yt-dlp 未产出音频文件", "error")
+        return None, None
+    latest = max(files, key=lambda f: os.path.getmtime(os.path.join(output_dir, f)))
+    name = os.path.splitext(latest)[0]
+    log(f"✅ yt-dlp 下载完成：{latest}", "success")
+    return latest, name
 
 
 def getvideo(url, output_dir, log_callback=None):
@@ -176,6 +229,9 @@ def getvideo(url, output_dir, log_callback=None):
         
         if not json_data:
             log("未找到视频信息", "error")
+            fb = _download_with_ytdlp(url, output_dir, log)
+            if fb[0]:
+                return fb
             return None, title if title else None
         
         if not title:
@@ -202,6 +258,9 @@ def getvideo(url, output_dir, log_callback=None):
                 retry_count += 1
                 if retry_count == max_retries:
                     log(f"音频下载失败（已重试{max_retries}次）：{str(e)}", "error")
+                    fb = _download_with_ytdlp(url, output_dir, log)
+                    if fb[0]:
+                        return fb
                     return None, None
                 log(f"音频下载失败，正在进行第{retry_count}次重试...", "info")
                 continue

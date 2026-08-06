@@ -501,7 +501,8 @@ class MainWindow(QMainWindow):
 
             # 判断平台：抖音走 GetDouyinVideo，其余走 B 站
             is_douyin = 'douyin.com' in url.lower() or 'iesdouyin.com' in url.lower()
-            self.log(f"开始处理{'抖音' if is_douyin else 'B站'}视频...", "info", tab=1)
+            platform = '抖音' if is_douyin else 'B站（直连失败自动切 yt-dlp 兜底）'
+            self.log(f"开始处理{platform}视频...", "info", tab=1)
 
             if is_douyin:
                 # 抖音：H5 直连 → Selenium cookie → API CDN 多级方案
