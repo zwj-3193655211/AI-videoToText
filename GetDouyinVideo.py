@@ -432,52 +432,59 @@ def _save_caption(output_dir, info):
 
 # ==================== CLI ====================
 
-USAGE_TEXT = """AI视频转文字 - 抖音下载器
-
-用法：
-    python GetDouyinVideo.py <抖音链接> [选项]
-
-示例：
-    python GetDouyinVideo.py "https://v.douyin.com/EN4ZWpDHmDA/"
-    python GetDouyinVideo.py "https://www.douyin.com/video/7639590279997132072"
-    python GetDouyinVideo.py "https://v.douyin.com/xxx/" --type both --output-dir ./下载
-
-参数：
-    url              抖音分享链接或页面链接（v.douyin.com / douyin.com / iesdouyin.com）
-    --output-dir     输出目录（默认：./音频）
-    --type           audio=只留音频（默认）/ video=只留视频 / both=都留
-    --cookie         手动 cookie（浏览器登录抖音后复制，遇到风控时最快最稳）
-
-说明：
-    自动多级方案：H5 分享页直连 → 浏览器(Selenium) cookie → API CDN。
-    风控失败时：稍后重试，或填 --cookie 立即解决。
-    也可以直接在 GUI 的"视频解析（B站/抖音）"标签页粘贴链接使用。
-"""
-
-
 def main():
-    import argparse
-    parser = argparse.ArgumentParser(description="下载抖音视频/音频（H5 + Selenium 多级方案）",
-                                     add_help=True)
-    parser.add_argument("url", nargs="?", help="抖音分享链接或页面链接（不带参数则显示本帮助）")
-    parser.add_argument("--output-dir", default="音频", help="输出目录（默认：./音频）")
-    parser.add_argument("--type", choices=["audio", "video", "both"], default="audio")
-    parser.add_argument("--cookie", default="", help="手动 cookie（浏览器复制，可选）")
-    args = parser.parse_args()
-    if not args.url:
-        print(USAGE_TEXT)
-        return 1
+    """
+    主函数：提供交互界面，让用户可以直接运行程序（与 GetBiliBiliVideo.py 一致）
+    """
+    print("=" * 50)
+    print("抖音音视频提取工具")
+    print("=" * 50)
 
+    # 获取用户输入
+    url = input("\n请输入抖音视频链接（分享链接 / 视频页链接均可）：").strip()
+    if not url:
+        print("错误：链接不能为空！")
+        return
+
+    # 选择爬取类型
+    print("\n请选择爬取类型：")
+    print("1. 仅爬取音频（M4A，默认）")
+    print("2. 仅爬取视频（MP4）")
+    print("3. 同时爬取音频和视频")
+    choice = input("请输入数字（1/2/3，直接回车默认 1）：").strip()
+    fetch_type_map = {"1": "audio", "2": "video", "3": "both"}
+    fetch_type = fetch_type_map.get(choice, "audio")
+
+    # 选择保存目录（默认当前目录）
+    output_dir = input("\n请输入文件保存目录（直接回车使用当前目录）：").strip()
+    if not output_dir:
+        output_dir = os.getcwd()
+        print(f"使用当前目录作为保存路径：{output_dir}")
+
+    # 定义日志输出函数（控制台打印）
     def console_log(msg, level="info"):
-        print(f"[{level}] {msg}")
+        level_prefix = {
+            "info": "[INFO] ",
+            "warning": "[WARNING] ",
+            "error": "[ERROR] ",
+            "success": "[SUCCESS] "
+        }.get(level, "[INFO] ")
+        print(f"{level_prefix}{msg}")
 
-    filename, title = get_video_audio(args.url, args.output_dir, fetch_type=args.type,
-                                      cookie=args.cookie, log_callback=console_log)
+    # 执行爬取（多级方案：H5 直连 → 浏览器 cookie → API CDN）
+    print("\n开始爬取...")
+    filename, title = get_video_audio(url, output_dir, fetch_type, console_log)
+
+    # 输出结果
+    print("\n" + "=" * 50)
+    if title:
+        print(f"视频标题：{title}")
     if filename:
-        print(f"\n✅ 成功：{filename} （标题：{title}）")
-        return 0
-    print("\n❌ 下载失败")
-    return 1
+        print(f"文件路径：{os.path.join(output_dir, filename)}")
+    else:
+        print("爬取失败！请检查链接或网络；抖音风控时稍后重试，或用浏览器登录抖音后复制 cookie 传入。")
+    print("=" * 50)
+
 
 
 if __name__ == "__main__":
