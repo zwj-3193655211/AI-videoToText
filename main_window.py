@@ -8,6 +8,7 @@ from PySide6.QtUiTools import QUiLoader
 from PySide6.QtCore import QTimer, Qt, Signal, QObject, QMetaObject, Slot, QThread, QEvent
 import re
 import GetBiliBiliVideo
+import GetDouyinVideo
 from datetime import datetime
 import transcription
 import translator
@@ -488,23 +489,34 @@ class MainWindow(QMainWindow):
     
 
     def process_bilibili(self):
-        """处理B站视频链接（Tab1）"""
+        """处理视频链接（Tab1：B站 / 抖音）"""
         url = self.url_input.text().strip()
         if not url:
-            self.log("请输入B站视频链接", "error", tab=1)
+            self.log("请输入B站/抖音视频链接", "error", tab=1)
             return
 
         try:
             # 禁用按钮
             self._set_buttons_state(1, False)
-            self.log("开始处理B站视频...", "info", tab=1)
 
-            # 获取音频文件
-            mp3_filename, title = GetBiliBiliVideo.getvideo(
-                url,
-                self.output_dirs['audio'],
-                lambda msg, level: self.log(msg, level, tab=1)
-            )
+            # 判断平台：抖音走 GetDouyinVideo，其余走 B 站
+            is_douyin = 'douyin.com' in url.lower() or 'iesdouyin.com' in url.lower()
+            self.log(f"开始处理{'抖音' if is_douyin else 'B站'}视频...", "info", tab=1)
+
+            if is_douyin:
+                # 抖音：H5 直连 → Selenium cookie → API CDN 多级方案
+                mp3_filename, title = GetDouyinVideo.getvideo(
+                    url,
+                    self.output_dirs['audio'],
+                    lambda msg, level: self.log(msg, level, tab=1)
+                )
+            else:
+                # 获取音频文件
+                mp3_filename, title = GetBiliBiliVideo.getvideo(
+                    url,
+                    self.output_dirs['audio'],
+                    lambda msg, level: self.log(msg, level, tab=1)
+                )
 
             if not mp3_filename:
                 raise Exception("获取音频文件失败")
