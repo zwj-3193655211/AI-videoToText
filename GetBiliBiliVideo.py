@@ -19,6 +19,7 @@ B站视频音频提取模块
 """
 
 import requests  # 用于发送HTTP请求
+import uuid  # 用于生成临时文件名
 import shutil  # 用于查找可执行文件
 import subprocess  # 用于调用 yt-dlp
 import sys
@@ -77,6 +78,49 @@ def get_bilibili_cookie(log_callback=None):
         return None
 
 
+def _mux_audio_video(video_path, audio_path, output_path, log):
+    """
+    用 ffmpeg 把 B 站 DASH 视频流（无音轨）与音频流合流成带声音的 mp4
+
+    Returns:
+        bool: 是否合流成功
+    """
+    ff = shutil.which("ffmpeg")
+    if not ff:
+        log("未找到 ffmpeg，无法合流音视频（视频将无声）", "warning")
+        return False
+    try:
+        cmd = [ff, "-y", "-i", video_path, "-i", audio_path,
+               "-c", "copy", output_path]
+        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="ignore",
+                           creationflags=flags, timeout=600)
+        if r.returncode == 0 and os.path.exists(output_path):
+            return True
+        log(f"ffmpeg 合流失败：{(r.stderr or '')[-150:]}", "warning")
+        return False
+    except Exception as e:
+        log(f"ffmpeg 合流异常：{e}", "warning")
+        return False
+
+
+def _download_audio_stream(audio_url, output_path, headers, log):
+    """临时下载 DASH 音频流（用于 video 模式合流）"""
+    for attempt in range(3):
+        try:
+            r = requests.get(audio_url, headers=headers, timeout=60)
+            r.raise_for_status()
+            with open(output_path, "wb") as f:
+                f.write(r.content)
+            return True
+        except Exception as e:
+            if attempt == 2:
+                log(f"临时音频下载失败：{e}", "warning")
+            else:
+                log(f"临时音频下载重试 {attempt + 1}/3...", "info")
+    return False
+
+
 def _download_with_ytdlp(url, output_dir, log):
     """
     requests 直连失败时用 yt-dlp 兜底下载音频（可选增强，不装也能用）
@@ -107,7 +151,7 @@ def _download_with_ytdlp(url, output_dir, log):
     ]
     try:
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-        r = subprocess.run(cmd, capture_output=True, text=True,
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="ignore",
                            creationflags=flags, timeout=900)
         if r.returncode != 0:
             log(f"yt-dlp 失败：{(r.stderr or '')[-200:]}", "error")
@@ -184,14 +228,13 @@ def getvideo(url, output_dir, log_callback=None):
         title = None
         json_data = None
         
-        # 尝试获取页面内容（先使用cookie，失败则不使用cookie重试）
+        # 尝试获取页面内容（先匿名，匿名拿不到再带 Cookie 重试）
+        # 注意：实测带 cookie（b_nut/buvid3）反而会被 B 站风控，不返回 __playinfo__
         for attempt in range(2):
-            # 每次尝试都带 Cookie（第二次自动重新获取新的 Cookie）
-            use_cookie = True
-            headers = get_headers(use_cookie)
+            headers = get_headers(use_cookie=(attempt == 1))
             
             if attempt == 1:
-                log("已重新获取Cookie，重试请求视频信息", "info")
+                log("匿名未拿到播放信息，改用 Cookie 重试", "info")
             
             max_retries = 3
             retry_count = 0
@@ -349,14 +392,12 @@ def get_video_audio(url, output_dir, fetch_type="both", log_callback=None):
         html = None
         json_data = None
         
-        # 获取视频页面和基础信息（先使用cookie，失败则不使用cookie重试）
+        # 获取视频页面和基础信息（先匿名，匿名拿不到再带 Cookie 重试）
         for attempt in range(2):
-            # 每次尝试都带 Cookie（第二次自动重新获取新的 Cookie）
-            use_cookie = True
-            headers = get_headers(use_cookie)
+            headers = get_headers(use_cookie=(attempt == 1))
             
             if attempt == 1:
-                log("已重新获取Cookie，重试请求视频信息", "info")
+                log("匿名未拿到播放信息，改用 Cookie 重试", "info")
             
             retry_count = 0
             while retry_count < max_retries:
@@ -432,7 +473,7 @@ def get_video_audio(url, output_dir, fetch_type="both", log_callback=None):
                         continue
                 
                 if retry_count < max_retries:
-                    # 保存视频文件
+                    # 保存视频文件（B 站 DASH 视频流无音轨，需与音频合流才有声音）
                     video_filename = f"{title}.mp4"
                     video_path = os.path.join(output_dir, video_filename)
                     # 处理重名
@@ -443,9 +484,42 @@ def get_video_audio(url, output_dir, fetch_type="both", log_callback=None):
                             video_filename = f"{base_name}_{counter}{ext}"
                             video_path = os.path.join(output_dir, video_filename)
                             counter += 1
-                    with open(video_path, 'wb') as f:
-                        f.write(video_content)
-                    log(f"{title} 视频爬取完成", "success")
+
+                    # 找/下音频用于合流（B 站 DASH 音频流地址从 json_data 取）
+                    audio_src = None
+                    try:
+                        _audio_url = json_data['data']['dash']['audio'][0]['baseUrl']
+                    except Exception:
+                        _audio_url = None
+                    if fetch_type == "both" and audio_filename:
+                        cand = os.path.join(output_dir, audio_filename)
+                        if os.path.exists(cand):
+                            audio_src = cand
+                    elif fetch_type == "video" and _audio_url:
+                        tmp_audio = os.path.join(
+                            output_dir, f"tmp_audio_{uuid.uuid4().hex}.m4a")
+                        if _download_audio_stream(_audio_url, tmp_audio, headers, log):
+                            audio_src = tmp_audio
+
+                    muxed = False
+                    if audio_src and os.path.exists(audio_src):
+                        video_tmp = os.path.join(
+                            output_dir, f"tmp_video_{uuid.uuid4().hex}.mp4")
+                        with open(video_tmp, "wb") as f:
+                            f.write(video_content)
+                        if _mux_audio_video(video_tmp, audio_src, video_path, log):
+                            muxed = True
+                            log(f"{title} 视频爬取完成（已合流，带声音）", "success")
+                        os.remove(video_tmp) if os.path.exists(video_tmp) else None
+                        if fetch_type == "video" and os.path.exists(audio_src) \
+                                and "tmp_audio_" in audio_src:
+                            os.remove(audio_src)
+
+                    if not muxed:
+                        # 兜底：无 ffmpeg 或合流失败时保存无音轨视频
+                        with open(video_path, "wb") as f:
+                            f.write(video_content)
+                        log(f"{title} 视频爬取完成（未合流，可能无声）", "success")
 
         return audio_filename, video_filename, title
 
