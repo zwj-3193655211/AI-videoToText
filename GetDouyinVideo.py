@@ -432,14 +432,41 @@ def _save_caption(output_dir, info):
 
 # ==================== CLI ====================
 
+USAGE_TEXT = """AI视频转文字 - 抖音下载器
+
+用法：
+    python GetDouyinVideo.py <抖音链接> [选项]
+
+示例：
+    python GetDouyinVideo.py "https://v.douyin.com/EN4ZWpDHmDA/"
+    python GetDouyinVideo.py "https://www.douyin.com/video/7639590279997132072"
+    python GetDouyinVideo.py "https://v.douyin.com/xxx/" --type both --output-dir ./下载
+
+参数：
+    url              抖音分享链接或页面链接（v.douyin.com / douyin.com / iesdouyin.com）
+    --output-dir     输出目录（默认：./音频）
+    --type           audio=只留音频（默认）/ video=只留视频 / both=都留
+    --cookie         手动 cookie（浏览器登录抖音后复制，遇到风控时最快最稳）
+
+说明：
+    自动多级方案：H5 分享页直连 → 浏览器(Selenium) cookie → API CDN。
+    风控失败时：稍后重试，或填 --cookie 立即解决。
+    也可以直接在 GUI 的"视频解析（B站/抖音）"标签页粘贴链接使用。
+"""
+
+
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="下载抖音视频/音频（H5 + Selenium 多级方案）")
-    parser.add_argument("url", help="抖音分享链接或页面链接")
+    parser = argparse.ArgumentParser(description="下载抖音视频/音频（H5 + Selenium 多级方案）",
+                                     add_help=True)
+    parser.add_argument("url", nargs="?", help="抖音分享链接或页面链接（不带参数则显示本帮助）")
     parser.add_argument("--output-dir", default="音频", help="输出目录（默认：./音频）")
     parser.add_argument("--type", choices=["audio", "video", "both"], default="audio")
     parser.add_argument("--cookie", default="", help="手动 cookie（浏览器复制，可选）")
     args = parser.parse_args()
+    if not args.url:
+        print(USAGE_TEXT)
+        return 1
 
     def console_log(msg, level="info"):
         print(f"[{level}] {msg}")
