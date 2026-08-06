@@ -53,6 +53,9 @@ API_HEADERS = {"User-Agent": DESKTOP_UA, "Referer": "https://www.douyin.com/",
                "Accept": "application/json"}
 DEFAULT_RATIO = "1080p"
 
+# 从分享文本中提取 URL（用户常整段粘贴：emoji + 文案 + 链接 + 复制提示）
+URL_RE = re.compile(r"https?://[^\s，。、；;！!？?]+")
+
 # L2 Selenium driver 候选路径（也可用环境变量 EDGE_DRIVER / CHROME_DRIVER 指定）
 DRIVER_CANDIDATES = [
     os.environ.get("EDGE_DRIVER", ""),
@@ -65,6 +68,16 @@ DRIVER_CANDIDATES = [
 
 
 # ==================== 工具 ====================
+
+def _extract_url(text: str) -> str:
+    """从混合文本中提取第一个 http(s) 链接；没有则原样返回"""
+    if not text:
+        return ""
+    m = URL_RE.search(text)
+    if m:
+        return m.group(0)
+    return text.strip()
+
 
 def _safe_filename(name: str) -> str:
     stem = re.sub(r"\s+", " ", name).strip()[:60] or "douyin-video"
@@ -277,7 +290,8 @@ def get_video_audio(url, output_dir, fetch_type="audio", cookie="", log_callback
         if log_callback:
             log_callback(msg, level)
 
-    if "douyin.com" not in url and "iesdouyin.com" not in url:
+    url = _extract_url(url)  # 支持粘贴整段分享文本
+    if not url or ("douyin.com" not in url and "iesdouyin.com" not in url):
         log("无效的抖音链接", "error")
         return None, None
     log(f"处理抖音链接：{url}", "info")
@@ -440,11 +454,14 @@ def main():
     print("抖音音视频提取工具")
     print("=" * 50)
 
-    # 获取用户输入
-    url = input("\n请输入抖音视频链接（分享链接 / 视频页链接均可）：").strip()
+    # 获取用户输入（支持整段粘贴分享文本）
+    raw = input("\n请输入抖音视频链接（分享链接 / 视频页链接均可）：").strip()
+    url = _extract_url(raw)
     if not url:
         print("错误：链接不能为空！")
         return
+    if url != raw:
+        print(f"识别到链接：{url}")
 
     # 选择爬取类型
     print("\n请选择爬取类型：")
