@@ -79,7 +79,7 @@
            </sizepolicy>
           </property>
           <property name="placeholderText">
-           <string>请输入bilibili分享链接</string>
+           <string>请输入B站/抖音分享链接（支持整段粘贴）</string>
           </property>
          </widget>
         </item>
